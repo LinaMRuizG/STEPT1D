@@ -1,0 +1,1217 @@
+# MISSING TO ADD THE LABELS AND NOTES TO EACH VARIABLE
+
+# =============================================================================
+# DATA VALIDATION MASTER SCHEMA
+# =============================================================================
+# Convention:
+#   dtype         : int | float | string | categorical | dichotomous | date
+#   nullable      : true → NaN allowed | false → NaN flagged as error
+#   invalid_action: flag → log to audit_log.csv and set to NaN
+#   transformations run in order top to bottom
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# GLOBAL: applied to every variable before any variable-level rule
+# -----------------------------------------------------------------------------
+global: #REVISAR QUE SI ESTEN TODOS LOS VALORES NULABLES
+  null_strings:
+    - "nan"
+    - "NaN"
+    - "NAN"
+    - "NULL"
+    - "null"
+    - "None"
+    - "none"
+    - ""
+    - "no se encuentra información en la historia clínica"
+    - "no se encuentra informacion en la historia clinica"
+    - "no se registró en la historia clínica"
+    - "no reportado en la historia clínica"
+    - "sin información"
+    - "sin informacion"
+    - "no reportado"
+    - "No es posible establecer el área de residencia"
+  invalid_action: flag
+ # Revisar qué otros valores se pueden adicionar
+ 
+# -----------------------------------------------------------------------------
+# REUSABLE ANCHORS  (referenced with *month_encoding, *yn_coerce, etc.)
+# -----------------------------------------------------------------------------
+_anchors:
+ 
+  month_encoding: &month_encoding
+    "Enero (01)":       1
+    "Febrero (02)":     2
+    "Marzo (03)":       3
+    "Abril (04)":       4
+    "Mayo (05)":        5
+    "Junio (06)":       6
+    "Julio (07)":       7
+    "Agosto (08)":      8
+    "Septiembre (09)":  9
+    "Octubre (10)":     10
+    "Noviembre (11)":   11
+    "Diciembre (12)":   12
+ 
+  # Si/No → 1/0, null handled by global null_strings
+  yn_coerce: &yn_coerce
+    "si":  1
+    "sí":  1
+    "no":  0
+ 
+  # shared transformations for all Si/No dichotomous variables
+  yn_transforms: &yn_transforms
+    - trim
+    - lowercase
+    - coerce
+    - to_int
+ 
+  # shared transformations for variables encoded from long text
+  encode_transforms: &encode_transforms
+    - trim
+    - encode
+ 
+  # shared transformations for year variables extracted from date strings
+  year_transforms: &year_transforms
+    - extract_year      # pd.to_datetime → .dt.year → Int64
+ 
+# =============================================================================
+# VARIABLES
+# =============================================================================
+variables:
+
+  institution: # THE IDEA WITH THIS IS TO GET ALL THE POSSIBLE UNIQUE RAW VALUES AND MAP TO A DEFAULT LIST OF VALUES
+    label: "Institución"
+    dtype: int
+    nullable: true              # "No se registró" → null (not code 5)
+    fuzzy_match: false
+    encoding:
+      "Hospital Pablo Tobon Uribe":                        0
+      "Hospital Universitario San Vicente Fundacion":      1
+      "Clinica Noel":                                      2
+      "Hospital General de Medellin":                      3
+      "Hospital Alma Mater de Antioquia":                  4
+      "Hospital Manuel Uribe Angel":                       5
+      "Hospital Marco Fidel Suarez":                       6
+    transformations: *encode_transforms
+    invalid_action: flag
+  
+  institution: # THE IDEA WITH THIS IS TO GET ALL THE POSSIBLE UNIQUE RAW VALUES AND MAP TO A DEFAULT LIST OF VALUES
+    label: "Institución"
+    dtype: categorical
+    nullable: false
+    fuzzy_match: false
+    threshold: 88
+    canonical: ["Hospital Pablo Tobon Uribe",
+                "Hospital Universitario San Vicente Fundacion",
+                "Clinica Noel",
+                "Hospital General de Medellin",
+                "Hospital Alma Mater de Antioquia",
+                "Hospital Manuel Uribe Angel",
+                "Hospital Marco Fidel Suarez"
+                ]               
+    transformations:
+      - trim
+      - smart_title_case  #??
+    invalid_action: flag
+    
+
+  first_name:
+    label: "Nombre(s) del paciente"
+    dtype: string
+    nullable: false
+    dedup_key: true
+    dedup_normalize: true       # generates shadow column first_name_key (lowercase, no accents)
+    transformations:
+      - sanitize
+      - trim
+      - collapse_spaces
+      - smart_title_case
+      - empty_to_null
+    max_length: 120
+    pattern: "^[\\p{L}\\s]+$"
+    invalid_action: flag
+
+
+  last_name:
+    label: "Apellido(s) del paciente"
+    dtype: string
+    nullable: false
+    dedup_key: true
+    dedup_normalize: true       # generates shadow column last_name_key (lowercase, no accents)
+    transformations:
+      - sanitize
+      - trim
+      - collapse_spaces
+      - smart_title_case
+      - empty_to_null
+    max_length: 120
+    pattern: "^[\\p{L}\\s]+$"
+    invalid_action: flag
+
+  tipo_documento:
+    label: "Tipo de documento"
+    dtype: int
+    nullable: true              # "No se registró" → null (not code 5)
+    fuzzy_match: false
+    encoding:
+      "Registro civil":                      0
+      "Tarjeta de identidad":                1
+      "Cédula de ciudadanía":                2
+      "Cédula de extranjería":               3
+      "Otro documento de identidad":         4
+    transformations: *encode_transforms
+    invalid_action: flag
+    
+  another_id:
+    label: "Otro tipo de documento de identidad"
+    note: "Ingrese solo letras mayúsculas sin tildes ni símbolos, máximo 30 caracteres"
+    dtype: string
+    nullable: true
+    transformations:
+      - trim
+      - uppercase
+      - empty_to_null
+    max_length: 120
+    invalid_action: flag
+
+  id_number:
+    label: "Número de documento"
+    dtype: string
+    nullable: false
+    dedup_key: true
+    transformations:
+      - trim
+      - uppercase
+    pattern: "^[A-Z0-9\\-]+$"
+    invalid_action: flag
+
+  sex:
+    label: "Sexo"
+    dtype: int
+    nullable: true              # "No se encuentra información" → null (not code 2)
+    fuzzy_match: false
+    encoding:
+      "Masculino": 0
+      "Femenino":  1
+    transformations: *encode_transforms
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # BIRTH & DEMOGRAPHICS
+  # ---------------------------------------------------------------------------
+
+
+  country_birth: # THE IDEA WITH THIS IS TO GET ALL THE POSSIBLE UNIQUE RAW VALUES AND MAP TO A DEFAULT LIST OF VALUES- puede ser nan
+    label: "País de nacimiento"
+    dtype: categorical
+    nullable: true
+    threshold: 88
+    canonical: []               # TODO: fill with canonical country names
+    transformations:
+      - trim
+      - smart_title_case
+    invalid_action: flag
+
+
+  birth_department: # THE IDEA WITH THIS IS TO GET ALL THE POSSIBLE UNIQUE RAW VALUES AND MAP TO A DEFAULT LIST OF VALUES- puede ser nan
+    label: "Departamento de nacimiento"
+    dtype: categorical
+    nullable: true
+    fuzzy_match: true
+    threshold: 88
+    canonical: []               # TODO: fill with canonical department names
+    transformations:
+      - trim
+      - smart_title_case
+    invalid_action: flag
+
+  municipality_birth: # THE IDEA WITH THIS IS TO GET ALL THE POSSIBLE UNIQUE RAW VALUES AND MAP TO A DEFAULT LIST OF VALUES- puede ser nan
+    label: "Municipio de nacimiento"
+    dtype: categorical
+    nullable: true
+    fuzzy_match: true
+    threshold: 88
+    canonical: []               # TODO: fill with canonical municipality names
+    transformations:
+      - trim
+      - smart_title_case
+    invalid_action: flag
+
+  birthdate_year:
+    label: "Año de nacimiento"
+    dtype: int
+    nullable: false
+    raw_dtype: date_string      # input format: "YYYY-MM-DD"
+    transformations: *year_transforms
+    min: 1900
+    max: 2025
+    invalid_action: flag
+
+  birthdate_month:
+    label: "Mes de nacimiento"
+    dtype: int
+    nullable: true
+    fuzzy_match: false
+    encoding:
+      <<: *month_encoding
+    transformations: *encode_transforms
+    invalid_action: flag
+
+  age: # delete age_currently??
+    dtype: int
+    min: 0
+    max: 120
+    nullable: false
+
+  # ---------------------------------------------------------------------------
+  # RESIDENCE
+  # ---------------------------------------------------------------------------
+
+  country_residence: # THE IDEA WITH THIS IS TO GET ALL THE POSSIBLE UNIQUE RAW VALUES AND MAP TO A DEFAULT LIST OF VALUES- puede ser nan
+    nullable: true # if nan Null
+    dtype: categorical
+    fuzzy_match: true
+    threshold: 88
+    canonical: [Antioquia, Bogotá, Valle del Cauca, Cundinamarca]
+
+  department_residence: # THE IDEA WITH THIS IS TO GET ALL THE POSSIBLE UNIQUE RAW VALUES AND MAP TO A DEFAULT LIST OF VALUES- puede ser nan
+    nullable: true # if nan Null
+    dtype: categorical
+    fuzzy_match: true
+    threshold: 88
+    canonical: [Antioquia, Bogotá, Valle del Cauca, Cundinamarca]
+
+  municipality_residence:
+    label: "Municipio de residencia (Valle de Aburrá)"
+    dtype: int
+    nullable: true
+    fuzzy_match: false
+    encoding:
+      "Medellín":                                        0
+      "Itagüí":                                          1
+      "Envigado":                                        2
+      "Sabaneta":                                        3
+      "Caldas":                                          4
+      "La Estrella":                                     5
+      "Bello":                                           6
+      "Barbosa":                                         7
+      "Copacabana":                                      8
+      "Girardota":                                       9
+      "Corregimiento de Altavista":                      10
+      "Corregimiento de Palmitas":                       11
+      "Corregimiento de San Antonio de Prado":           12
+      "Corregimiento de San Cristóbal":                  13
+      "Corregimiento de Santa Elena":                    14
+      "Valle de Aburrá sin especificar":                 15
+      "Residencia fuera del Valle de Aburrá":            16
+    transformations: *encode_transforms
+    invalid_action: flag
+
+  another_municipality_res: # THE IDEA WITH THIS IS TO GET ALL THE POSSIBLE UNIQUE RAW VALUES AND MAP TO A DEFAULT LIST OF VALUES- puede ser nan
+    nullable: true # if nan Null
+    dtype: categorical
+    fuzzy_match: true
+    threshold: 88
+    canonical: [Antioquia, Bogotá, Valle del Cauca, Cundinamarca]
+
+  address_res:
+    label: ""
+    dtype: string
+    nullable: true
+    transformations: 
+     - sanitize
+     - trim
+     - lowercase
+
+  neighborhood_residence: # THE IDEA WITH THIS IS TO GET ALL THE POSSIBLE UNIQUE RAW VALUES AND MAP TO A DEFAULT LIST OF VALUES- puede ser nan
+    nullable: true # if nan Null
+    dtype: categorical
+    fuzzy_match: true
+    threshold: 88
+    canonical: [Antioquia, Bogotá, Valle del Cauca, Cundinamarca]
+
+  commune_residence:
+    label: "Comuna de residencia"
+    dtype: int
+    nullable: true
+    fuzzy_match: false
+    encoding:                   # encoded value matches real commune number
+      "Popular (1)":              1
+      "Santa Cruz (2)":           2
+      "Manrique (3)":             3
+      "Aranjuez (4)":             4
+      "Castilla (5)":             5
+      "Doce de Octubre (6)":      6
+      "Robledo (7)":              7
+      "Villa Hermosa (8)":        8
+      "Buenos Aires (9)":         9
+      "La Candelaria (10)":       10
+      "Laureles-Estadio (11)":    11
+      "La América (12)":          12
+      "San Javier (13)":          13
+      "El Poblado (14)":          14
+      "Guayabal (15)":            15
+      "Belén (16)":               16
+    transformations: *encode_transforms
+    invalid_action: flag
+
+  area_residence:
+    label: "Área de residencia"
+    dtype: int
+    nullable: true
+    fuzzy_match: false
+    encoding:
+      "Urbano": 0
+      "Rural":  1
+    transformations: *encode_transforms
+    invalid_action: flag
+
+  healthcare_system:
+    label: "Sistema de salud"
+    dtype: int
+    nullable: true
+    fuzzy_match: false
+    encoding:
+      "Contributivo":                                                              0
+      "Subsidiado":                                                                1
+      "Especial (Fuerzas Militares, Policía Nacional, Magisterio, Ecopetrol)":     2
+      "No tiene afiliación al sistema de salud":                                   3
+      "Póliza de seguro":                                                          4
+      "Particular":                                                                5
+    transformations: *encode_transforms
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # DIAGNOSIS
+  # ---------------------------------------------------------------------------
+  
+  diagnostic_codes: # dejar esta variable categorica o re-organizar las sgtes en una sola??
+    dtype: int
+    nullable: true
+    fuzzy_match: false
+    encoding:
+      "E100 diabetes mellitus insulinodependiente con coma":                                             0
+      "E101 diabetes mellitus insulinodependiente con cetoacidosis":                                     1
+      "E102 diabetes mellitus insulinodependiente con complicaciones renales":                           2
+      "E103 diabetes mellitus insulinodependiente con complicaciones oftálmicas":                        3
+      "E104 diabetes mellitus insulinodependiente con complicaciones neurológicas":                      4
+      "E105 diabetes mellitus insulinodependiente con complicaciones circulatorias periféricas":         5
+      "E106 diabetes mellitus insulinodependiente con otras complicaciones especificadas":               6
+      "E107 diabetes mellitus insulinodependiente con complicaciones múltiples":                         7
+      "E108 diabetes mellitus insulinodependiente con complicaciones no especificadas":                  8
+      "E109 diabetes mellitus insulinodependiente sin mención de complicación":                          9
+    transformations: *encode_transforms
+    invalid_action: flag
+    note: "parent variable — consider whether this duplicates diagnostic_codes/0..9"
+
+  diagnostic_codes/0:
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    coerce:
+      "1":   1       # raw comes as string "1"
+      "0":   0       # raw comes as string "0"
+      "True":  1
+      "False": 0
+    transformations:
+      - to_int                  # converts 0.0 → 0 and 1.0 → 1
+    invalid_action: flag
+
+  diagnostic_codes/1:
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    coerce:
+      "1":   1       # raw comes as string "1"
+      "0":   0       # raw comes as string "0"
+      "True":  1
+      "False": 0
+    transformations:
+      - to_int                  # converts 0.0 → 0 and 1.0 → 1
+    invalid_action: flag
+  
+  diagnostic_codes/2:
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    coerce:
+      "1":   1       # raw comes as string "1"
+      "0":   0       # raw comes as string "0"
+      "True":  1
+      "False": 0
+    transformations:
+      - to_int                  # converts 0.0 → 0 and 1.0 → 1
+    invalid_action: flag
+  
+  diagnostic_codes/3:
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    coerce:
+      "1":   1       # raw comes as string "1"
+      "0":   0       # raw comes as string "0"
+      "True":  1
+      "False": 0
+    transformations:
+      - to_int                  # converts 0.0 → 0 and 1.0 → 1
+    invalid_action: flag
+
+  diagnostic_codes/4:
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    coerce:
+      "1":   1       # raw comes as string "1"
+      "0":   0       # raw comes as string "0"
+      "True":  1
+      "False": 0
+    transformations:
+      - to_int                  # converts 0.0 → 0 and 1.0 → 1
+    invalid_action: flag
+
+  diagnostic_codes/5:
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    coerce:
+      "1":   1       # raw comes as string "1"
+      "0":   0       # raw comes as string "0"
+      "True":  1
+      "False": 0
+    transformations:
+      - to_int                  # converts 0.0 → 0 and 1.0 → 1
+    invalid_action: flag
+
+  diagnostic_codes/6:
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    coerce:
+      "1":   1       # raw comes as string "1"
+      "0":   0       # raw comes as string "0"
+      "True":  1
+      "False": 0
+    transformations:
+      - to_int                  # converts 0.0 → 0 and 1.0 → 1
+    invalid_action: flag
+
+  diagnostic_codes/7:
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    coerce:
+      "1":   1       # raw comes as string "1"
+      "0":   0       # raw comes as string "0"
+      "True":  1
+      "False": 0
+    transformations:
+      - to_int                  # converts 0.0 → 0 and 1.0 → 1
+    invalid_action: flag
+
+  diagnostic_codes/8:
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    coerce:
+      "1":   1       # raw comes as string "1"
+      "0":   0       # raw comes as string "0"
+      "True":  1
+      "False": 0
+    transformations:
+      - to_int                  # converts 0.0 → 0 and 1.0 → 1
+    invalid_action: flag
+
+  diagnostic_codes/9:
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    coerce:
+      "1":   1       # raw comes as string "1"
+      "0":   0       # raw comes as string "0"
+      "True":  1
+      "False": 0
+    transformations:
+      - to_int                  # converts 0.0 → 0 and 1.0 → 1
+    invalid_action: flag
+
+
+  diagnostic_confirmation:
+    label: "Confirmación diagnóstica"
+    dtype: int
+    nullable: true
+    fuzzy_match: false
+    encoding:
+      "Diagnóstico realizado por el médico tratante según criterio clínico":  0
+      "Aplicación de criterios ADA 2026 por especialista del proyecto":       1
+      "Ambas estrategias":                                                    2
+    transformations: *encode_transforms
+    invalid_action: flag
+
+
+  hospital_diagnosis:
+    label: "Diagnóstico intrahospitalario"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+    note: "not present in source Excel, derived variable"
+    
+  diagnostic_residency:
+    label: "Diagnóstico en municipio de residencia"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+ 
+  diagnostic_site:
+    label: "Sitio diagnóstico"
+    dtype: string
+    nullable: true
+    transformations:
+      - sanitize
+      - trim
+      - collapse_spaces
+      - lowercase
+      - empty_to_null
+    max_length: 100
+    invalid_action: flag
+ 
+
+  # ---------------------------------------------------------------------------
+  # INSULIN & TREATMENT
+  # ---------------------------------------------------------------------------
+
+  insulin_therapy:
+    label: "Terapia con insulina"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+
+  insulin_types: # dejar esta variable categorica o re-organizar las sgtes en una sola??
+    label: "Tipos de insulina (variable padre)"
+    dtype: int
+    nullable: true
+    fuzzy_match: false
+    encoding:
+      "Insulina Aspart":          0
+      "Insulina Glulisina":       1
+      "Insulina Lispro":          2
+      "Humana Regular (DNAr)":    3
+      "NPH (DNAr)":               4
+      "Degludec":                 5
+      "Detemir":                  6
+      "Glargina":                 7
+      "Glargina U-300":           8
+      "Glargina/Lixisenatida":    9
+    transformations: *encode_transforms
+    invalid_action: flag
+    note: "parent variable — consider whether this duplicates insulin_types/0..12"
+
+  insulin_types/0:
+    label: "Insulina Aspart"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  insulin_types/1:
+    label: "Insulina Glulisina"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  insulin_types/2:
+    label: "Insulina Lispro"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  insulin_types/3:
+    label: "Humana Regular (DNAr)"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  insulin_types/4:
+    label: "NPH (DNAr)"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  insulin_types/5:
+    label: "Degludec"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  insulin_types/6:
+    label: "Detemir"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  insulin_types/7:
+    label: "Glargina"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  insulin_types/8:
+    label: "Glargina U-300"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  insulin_types/9:
+    label: "Glargina/Lixisenatida"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  insulin_types/10:
+    label: "Degludec/Liraglutida"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  insulin_types/11:
+    label: "Otros tipos de insulina"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  insulin_types/12:
+    label: "No reportado en la historia clínica"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int
+    invalid_action: flag
+
+  another_insulin:
+    dtype: string
+    nullable: true
+    transformations:
+      - trim              # remove leading/trailing spaces
+      - collapse_spaces   # "word  word" → "word word"
+      - lowercase         # "Texto Libre" → "texto libre"
+    max_length: 50        # adjust to your context
+    invalid_action: flag
+
+  insulin_pump:
+    label: "Bomba de insulina"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+ 
+  glucose_monitoring:
+    label: "Monitoreo de glucosa"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+ 
+  Glucometr_a:
+    label: "Glucometría"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+    note: "not present in source Excel, derived variable"
+ 
+  other_hypoglycemic:
+    label: "Otro hipoglucemiante"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # DATES & TIME VARIABLES
+  # (pattern: year → month → time_since for each clinical event)
+  # ---------------------------------------------------------------------------
+
+  year_diagnosis:
+    label: "Año de diagnóstico"
+    dtype: int
+    nullable: true
+    raw_dtype: date_string #review???
+    transformations: *year_transforms
+    min: 1900
+    max: 2025
+    invalid_action: flag
+
+  month_diagnosis:
+    label: "Mes de diagnóstico"
+    dtype: int
+    nullable: true
+    fuzzy_match: false
+    encoding:
+      <<: *month_encoding
+    transformations: *encode_transforms
+    invalid_action: flag
+      
+  
+  time_diagnosis: # the other one appears to be incorrect: time_diagnosis_dm1 
+    # should we keep this in this way -automatically calculated- or calculate this by our wn??
+    label: "Tiempo desde diagnóstico (años)"
+    dtype: int
+    nullable: true
+    min: 0
+    negative_action: null
+    transformations:
+      - to_int
+      - negative_to_null
+    invalid_action: flag
+    note: "negative values → data entry error → null. Verify vs time_diagnosis_dm1"
+
+  year_symptoms:
+    label: "Año de inicio de síntomas"
+    dtype: int
+    nullable: true
+    raw_dtype: date_string
+    transformations: *year_transforms
+    min: 1900
+    max: 2025
+    invalid_action: flag
+
+  month_symptoms:
+    label: "Mes de inicio de síntomas"
+    dtype: int
+    nullable: true
+    fuzzy_match: false
+    encoding:
+      <<: *month_encoding
+    transformations: *encode_transforms
+    invalid_action: flag
+      
+  
+  time_symptoms: # the other one appears to be incorrect: time_symptoms_dm1 
+    # should we keep this in this way -automatically calculated- or calculate this by our wn??
+    label: "Tiempo desde inicio de síntomas (años)"
+    dtype: int
+    nullable: true
+    min: 0
+    negative_action: null
+    transformations:
+      - to_int
+      - negative_to_null
+    invalid_action: flag
+    note: "negative values → data entry error → null. Verify vs time_symptoms_dm1"
+
+  year_clinical_debut:
+    label: "Año del debut clínico"
+    dtype: int
+    nullable: true
+    raw_dtype: date_string
+    transformations: *year_transforms
+    min: 1900
+    max: 2025
+    invalid_action: flag
+
+  month_clinical_debut:
+    label: "Mes del debut clínico"
+    dtype: int
+    nullable: true
+    fuzzy_match: false
+    encoding:
+      <<: *month_encoding
+    transformations: *encode_transforms
+    invalid_action: flag
+      
+  
+  time_clinical_debut: # the other one appears to be incorrect: time_clinical_debut_dm1 
+    # should we keep this in this way -automatically calculated- or calculate this by our wn??
+    label: "Tiempo desde debut clínico (años)"
+    dtype: int
+    nullable: true
+    min: 0
+    negative_action: null
+    transformations:
+      - to_int
+      - negative_to_null
+    invalid_action: flag
+    note: "negative values → data entry error → null. Verify vs time_clinical_debut_dm1"
+
+
+  year_insulin:
+    label: "Año de inicio de insulina"
+    dtype: int
+    nullable: true
+    raw_dtype: date_string
+    transformations: *year_transforms
+    min: 1900
+    max: 2025
+    invalid_action: flag
+
+  month_insulin:
+    label: "Mes de inicio de insulina"
+    dtype: int
+    nullable: true
+    fuzzy_match: false
+    encoding:
+      <<: *month_encoding
+    transformations: *encode_transforms
+    invalid_action: flag
+      
+  
+  time_insulin: # the other one appears to be incorrect: time_insulin_dm1 
+    # should we keep this in this way -automatically calculated- or calculate this by our wn??
+    label: "Tiempo desde inicio de insulina (años)"
+    dtype: int
+    nullable: true
+    min: 0
+    negative_action: null
+    transformations:
+      - to_int
+      - negative_to_null
+    invalid_action: flag
+    note: "negative values → data entry error → null. Verify vs time_insulin_dm1"
+
+  year_consultation:
+    label: "Año de consulta"
+    dtype: int
+    nullable: true
+    raw_dtype: date_string
+    transformations: *year_transforms
+    min: 1900
+    max: 2025
+    invalid_action: flag
+
+  mounth_consultation:
+    label: "Mes de consulta"
+    dtype: int
+    nullable: true
+    fuzzy_match: false
+    encoding:
+      <<: *month_encoding
+    transformations: *encode_transforms
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # AUTOANTIBODIES
+  # ---------------------------------------------------------------------------
+
+  year_positive_ab:
+    label: "Autoanticuerpos relacionados con la diabetes"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce:
+      "negativo": 0
+      "positivo": 1
+    transformations:
+      - trim
+      - lowercase
+      - coerce
+      - to_int
+    invalid_action: flag
+
+  year_positive_lab:
+    label: "Año del resultado positivo de autoanticuerpos"
+    dtype: int
+    nullable: true
+    raw_dtype: date_string
+    transformations: *year_transforms
+    min: 1900
+    max: 2025
+    invalid_action: flag
+
+  time_positive: # time_positive_dm1
+    label: "Tiempo desde resultado positivo (años)"
+    dtype: int
+    nullable: true
+    min: 0
+    negative_action: null
+    transformations:
+      - to_int
+      - negative_to_null
+    invalid_action: flag
+    note: "negative values → data entry error → null. Verify vs time_positive_dm1"
+
+  # ---------------------------------------------------------------------------
+  # FAMILY HISTORY
+  # ---------------------------------------------------------------------------
+
+  ant_familiary_dm1:
+    label: "Antecedente familiar DM1"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+ 
+  ant_familiary_dm2:
+    label: "Antecedente familiar DM2"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+ 
+  ant_familiary_dm:
+    label: "Antecedente familiar DM (cualquier tipo)"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+ 
+  ant_mother_gestacional:
+    label: "Antecedente materno de diabetes gestacional"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # COMPLICATIONS & COMORBIDITIES
+  # ---------------------------------------------------------------------------
+
+  comp_renal:
+    label: "Complicación renal"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+ 
+  comp_eyes:
+    label: "Complicación ocular"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+ 
+  comp_foot:
+    label: "Complicación pie diabético"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+ 
+  amputation:
+    label: "Amputación"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+ 
+  hta:
+    label: "Hipertensión arterial"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+ 
+  cvd:
+    label: "Enfermedad cardiovascular"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+ 
+  obesity:
+    label: "Obesidad"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+ 
+  covid_19:
+    label: "COVID-19"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+ 
+  ckd:
+    label: "Enfermedad renal crónica"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+ 
+  hypoglycemia:
+    label: "Hipoglucemia"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+ 
+  mental_health:
+    label: "Salud mental"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+ 
+  other_diseases:
+    label: "Otras enfermedades"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+ 
+  # ---------------------------------------------------------------------------
+  # DEATH
+  # ---------------------------------------------------------------------------
+
+  death:
+    label: "Fallecimiento"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    coerce: *yn_coerce
+    transformations: *yn_transforms
+    invalid_action: flag
+ 
+  death_date:
+    label: "Fecha de fallecimiento"
+    dtype: date
+    nullable: true
+    raw_format: "%Y-%m-%d"
+    transformations:
+      - trim
+      - to_date
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # EPISODES
+  # ---------------------------------------------------------------------------
+ 
+  year_episode:
+    label: "Año y mes del episodio"
+    dtype: date
+    nullable: true
+    raw_format: "%m/%Y"
+    transformations:
+      - trim
+      - to_date
+    output_format: "%Y-%m"
+    invalid_action: flag
+    note: "day not collected — set to 1 as placeholder internally"
+ 
+  year_episode_dm:
+    label: "Año y mes del episodio DM"
+    dtype: date
+    nullable: true
+    raw_format: "%m/%Y"
+    transformations:
+      - trim
+      - to_date
+    output_format: "%Y-%m"
+    invalid_action: flag
+    note: "day not collected — set to 1 as placeholder internally"
+ 
+  # ---------------------------------------------------------------------------
+  # ADMINISTRATIVE
+  # ---------------------------------------------------------------------------
+ 
+  observations:
+    label: "Observaciones"
+    dtype: string
+    nullable: true
+    transformations:
+      - sanitize
+      - trim
+      - collapse_spaces
+      - lowercase
+      - empty_to_null
+    max_length: 500
+    invalid_action: flag
+ 
+  researcher_name:
+    label: "Nombre del investigador"
+    dtype: string
+    nullable: true
+    transformations:
+      - sanitize
+      - trim
+      - collapse_spaces
+      - smart_title_case
+      - empty_to_null
+    max_length: 120
+    invalid_action: flag
+    note: "consider switching to categorical + fuzzy_match once all researcher names are known"
