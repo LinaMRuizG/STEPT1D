@@ -43,6 +43,7 @@ from .transformations import TRANSFORMATIONS, apply_map_values
 # Project root = two levels above this file
 # STEPT1D/data_validation_master/validator/validator.py
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_OUTPUT_DIR = Path.cwd() / "outputs"
 
 
 class DataValidator:
@@ -555,7 +556,7 @@ class DataValidator:
         print()
         return self
 
-    def save(
+    def save_old(
         self,
         output_path: Optional[str] = None,
         audit_path:  Optional[str] = None,
@@ -577,6 +578,28 @@ class DataValidator:
 
         print(f"  Cleaned data saved → {output_path}")
         print(f"  Cleaned shape:       {self.cleaned.shape}")
+        return self
+    
+    def save(
+        self,
+        output_path: Optional[str] = None,
+        audit_path: Optional[str] = None,
+    ) -> "DataValidator":
+        """Save the cleaned dataset and audit log as CSV files."""
+        
+        # Default to current workspace's 'outputs' directory
+        output_path = output_path or str(DEFAULT_OUTPUT_DIR / "cleaned_db.csv")
+        audit_path = audit_path or str(DEFAULT_OUTPUT_DIR / "audit_log.csv")
+
+        # Create directories if they don't exist
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(audit_path).parent.mkdir(parents=True, exist_ok=True)
+
+        self.cleaned.to_csv(output_path, index=False, encoding="utf-8")
+        self.audit.save(audit_path)
+
+        print(f" Cleaned data saved -> {output_path}")
+        print(f" Cleaned shape: {self.cleaned.shape}")
         return self
 
     def get_cleaned(self) -> pd.DataFrame:

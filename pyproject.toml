@@ -1,0 +1,27 @@
+[tool.poetry]
+name = "master_validator"
+version = "0.1.0"
+description = "Data validation library"
+authors = ["Lina Ruiz <your_email@example.com>"]
+readme = "README.md"
+
+# Point directly to the 'validator' package inside 'data_validation_master'
+packages = [
+    { include = "validator", from = "data_validation_master" }
+]
+
+# Include additional configuration files (like your YAML schema) inside the package
+include = [
+    "data_validation_master/*.yaml"
+]
+
+[tool.poetry.dependencies]
+python = ">=3.10"
+pandas = "^2.3.3"
+pydantic = "^2.12.5"
+pyyaml = "^6.0.3"
+rapidfuzz = "^3.14.3"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
