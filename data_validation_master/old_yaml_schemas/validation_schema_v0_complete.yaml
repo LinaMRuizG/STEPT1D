@@ -1,0 +1,431 @@
+# =============================================================================
+# DATA VALIDATION MASTER SCHEMA for csv-XML values and headers
+# =============================================================================
+# Convention:
+#   dtype         : int | float | string | categorical | dichotomous | date
+#   nullable      : true → NaN allowed | false → NaN flagged as error
+#   invalid_action: flag → log to audit_log.csv and set to NaN
+#   transformations run in order top to bottom
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# GLOBAL: applied to every variable before any variable-level rule
+# -----------------------------------------------------------------------------
+global:
+  null_strings:
+    - "nan"
+    - "NaN"
+    - "NAN"
+    - "NULL"
+    - "null"
+    - "None"
+    - "none"
+    - ""
+    - "no se encuentra información en la historia clínica"
+    - "no se encuentra informacion en la historia clinica"
+    - "no se registró en la historia clínica"
+    - "no reportado en la historia clínica"
+    - "sin información"
+    - "sin informacion"
+    - "Sin información"
+    - "no reportado"
+    - "No reportado"
+    - "No es posible establecer el área de residencia"
+    - "No se encuentra información en la historia clínica"
+    - "No se registró en la historia clínica"
+    - "No reportado en la historia clínica"
+    - "Sin Dato"
+    - "Sin dato"
+    - "sin dato"
+  invalid_action: flag
+
+# -----------------------------------------------------------------------------
+# REUSABLE ANCHORS  (referenced with *month_encoding, *yn_coerce, etc.)
+# -----------------------------------------------------------------------------
+_anchors:
+  month_encoding: &month_encoding
+    "Enero (01)":       1
+    "Febrero (02)":     2
+    "Marzo (03)":       3
+    "Abril (04)":       4
+    "Mayo (05)":        5
+    "Junio (06)":       6
+    "Julio (07)":       7
+    "Agosto (08)":      8
+    "Septiembre (09)":  9
+    "Octubre (10)":     10
+    "Noviembre (11)":   11
+    "Diciembre (12)":   12
+
+  yn_coerce: &yn_coerce
+    "si":  1
+    "sí":  1
+    "no":  0
+
+  yn_transforms: &yn_transforms
+    - trim
+    - lowercase
+    - coerce
+    - to_int
+
+  encode_transforms: &encode_transforms
+    - trim
+    - encode
+
+  year_transforms: &year_transforms
+    - extract_year
+
+# =============================================================================
+# VARIABLES
+# =============================================================================
+variables:
+
+  Institución:
+    label: "institution"
+    note: "Open-ended question. Institution where the patient data is being collected"
+    dtype: int
+    nullable: false
+    fuzzy_match: true
+    threshold: 88
+    canonical:
+      - "Hospital Pablo Tobon Uribe"
+      - "Hospital Universitario San Vicente Fundacion"
+      - "Clinica Noel"
+      - "Hospital General de Medellin"
+      - "Hospital Alma Mater de Antioquia"
+      - "Hospital Manuel Uribe Angel"
+      - "Hospital Marco Fidel Suarez"
+    encoding_map:
+      "Hospital Pablo Tobón Uribe":                    0
+      "Hospital Universitario San Vicente Fundación":  1
+      "Clínica Noel":                                  2
+      "Hospital General de Medellín":                  3
+      "Hospital Alma Máter de Antioquia":              4
+      "Hospital Manuel Uribe Ángel":                   5
+      "Hospital Marco Fidel Suárez":                   6              
+    transformations:
+      - trim
+      - smart_title_case
+      - empty_to_null
+    invalid_action: flag
+
+  Nombre(s) del paciente:
+    label: "first_name"
+    note: "Open-ended question. Names of patients diagnosed with Type 1 Diabetes"
+    dtype: string
+    nullable: false
+    transformations:
+      - sanitize
+      - trim
+      - collapse_spaces
+      - smart_title_case
+      - empty_to_null
+    max_length: 120
+    pattern: "^[\\p{L}\\s]+$"
+    invalid_action: flag
+
+  Apellido(s) del paciente:
+    label: "last_name"
+    note: "Open-ended question. Names of patients diagnosed with Type 1 Diabetes"
+    dtype: string
+    nullable: false
+    transformations:
+      - sanitize
+      - trim
+      - collapse_spaces
+      - smart_title_case
+      - empty_to_null
+    max_length: 120
+    pattern: "^[\\p{L}\\s]+$"
+    invalid_action: flag
+
+  Tipo de documento de identidad:
+    label: "identity_document"
+    note: "Single-choice question. Type of identity document the patient used during their last clinical encounter."
+    dtype: string
+    nullable: true
+    encoding_map:
+      "Registro civil":                      0
+      "Tarjeta de identidad":                1
+      "Cédula de ciudadanía":                2
+      "Cédula de extranjería":               3
+      "Otro documento de identidad":         4
+    transformations: *encode_transforms
+    invalid_action: flag
+    
+  Otro tipo de documento de identidad:
+    label: "another_id"
+    note: "Open-ended question. Other type of identity document"
+    dtype: categorical
+    nullable: true
+    transformations:
+      - trim
+      - smart_title_case
+    invalid_action: flag
+
+  Número documento de identidad:
+    label: "id_number"
+    note: "Open-ended question. Patient identity document number"
+    dtype: string
+    nullable: false
+    transformations:
+      - trim
+      - uppercase
+    pattern: "^[A-Z0-9\\-]+$"
+    special_null_values: [99]
+    invalid_action: flag
+
+  Sexo biológico:
+    label: "sex"
+    note: "Single-choice question. Patient's biological sex as reported in the medical record"
+    dtype: string
+    nullable: true
+    allowed: ["Masculino", "Femenino"]
+    transformations:
+      - trim
+      - empty_to_null
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # BIRTH & DEMOGRAPHICS
+  # ---------------------------------------------------------------------------
+
+  País de nacimiento: 
+    label: "country_birth"
+    note: "Open-ended question. Patient's country of birth. It could be any country ~ 191"
+    dtype: categorical
+    nullable: true
+    fuzzy_match: true 
+    threshold: 88
+    canonical: ["Afganistán", "Albania", "Argelia", "Andorra", "Angola", "Antigua y Barbuda", "Argentina", "Armenia", "Australia", "Austria", "Azerbaiyán", "Bahamas", "Baréin", "Bangladés", "Barbados", "Bielorrusia", "Bélgica", "Belice", "Benín", "Bután", "Bolivia", "Bosnia y Herzegovina", "Botsuana", "Brasil", "Brunéi", "Bulgaria", "Burkina Faso", "Burundi", "Cabo Verde", "Camboya", "Camerún", "Canadá", "República Centroafricana", "Chad", "Chile", "China", "Colombia", "Comoras", "Congo (República del)", "Congo (República Democrática del)", "Costa Rica", "Croacia", "Cuba", "Chipre", "República Checa", "Dinamarca", "Yibuti", "Dominica", "República Dominicana", "Ecuador", "Egipto", "El Salvador", "Guinea Ecuatorial", "Eritrea", "Estonia", "Suazilandia", "Etiopía", "Fiyi", "Finlandia", "Francia", "Gabón", "Gambia", "Georgia", "Alemania", "Ghana", "Grecia", "Granada", "Guatemala", "Guinea", "Guinea-Bisáu", "Guyana", "Haití", "Honduras", "Hungría", "Islandia", "India", "Indonesia", "Irán", "Irak", "Irlanda", "Israel", "Italia", "Jamaica", "Japón", "Jordania", "Kazajistán", "Kenia", "Kiribati", "Corea del Norte", "Corea del Sur", "Kosovo", "Kuwait", "Kirguistán", "Laos", "Letonia", "Líbano", "Lesoto", "Liberia", "Libia", "Liechtenstein", "Lituania", "Luxemburgo", "Madagascar", "Malaui", "Malasia", "Maldivas", "Malí", "Malta", "Islas Marshall", "Mauritania", "Mauricio", "México", "Micronesia", "Moldavia", "Mónaco", "Mongolia", "Montenegro", "Marruecos", "Mozambique", "Myanmar", "Namibia", "Nauru", "Nepal", "Países Bajos", "Nueva Zelanda", "Nicaragua", "Níger", "Nigeria", "Macedonia del Norte", "Noruega", "Omán", "Pakistán", "Palaos", "Palestina", "Panamá", "Papúa Nueva Guinea", "Paraguay", "Perú", "Filipinas", "Polonia", "Portugal", "Catar", "Rumanía", "Rusia", "Ruanda", "San Cristóbal y Nieves", "Santa Lucía", "San Vicente y las Granadinas", "Samoa", "San Marino", "Santo Tomé y Príncipe", "Arabia Saudita", "Senegal", "Serbia", "Seychelles", "Sierra Leona", "Singapur", "Eslovaquia", "Eslovenia", "Islas Salomón", "Somalia", "Sudáfrica", "Sudán del Sur", "España", "Sri Lanka", "Sudán", "Surinam", "Suecia", "Suiza", "Siria", "Taiwán", "Tayikistán", "Tanzania", "Tailandia", "Timor Oriental", "Togo", "Tonga", "Trinidad y Tobago", "Túnez", "Turquía", "Turkmenistán", "Tuvalu", "Uganda", "Ucrania", "Emiratos Árabes Unidos", "Reino Unido", "Estados Unidos", "Uruguay", "Uzbekistán", "Vanuatu", "Ciudad del Vaticano", "Venezuela", "Vietnam", "Yemen", "Zambia", "Zimbabue"]
+    transformations:
+      - trim
+      - smart_title_case
+    invalid_action: flag
+
+  Departamento de Nacimiento: 
+    label: "birth_department"
+    note: "Open-ended question. Department of birth (Colombia). It appears if country_birth is Colombia."
+    dtype: categorical
+    nullable: true
+    fuzzy_match: true
+    threshold: 88
+    canonical: ["Amazonas", "Antioquia", "Arauca", "Atlantico", "Bolivar", "Boyaca", "Caldas", "Caqueta", "Casanare", "Cauca", "Cesar", "Choco", "Cordoba", "Cundinamarca", "Guainia", "Guaviare", "Huila", "La Guajira", "Magdalena", "Meta", "Nariño", "Norte de Santander", "Putumayo", "Quindio", "Risaralda", "San Andres y Providencia", "Santander", "Sucre", "Tolima", "Valle del Cauca", "Vaupes", "Vichada"]
+    transformations:
+      - trim
+      - smart_title_case
+    invalid_action: flag
+
+  Municipio de nacimiento:
+    label: "municipality_birth"
+    note: "Open-ended question. Unique baseline lookup collection for Colombian municipalities."
+    dtype: categorical
+    nullable: true
+    fuzzy_match: true
+    threshold: 88
+    canonical: ["Abejorral", "Abriaquí", "Acacias", "Acandi", "Acevedo", "Achi", "Agrado", "Agua de Dios", "Aguachica", "Aguada", "Aguazul", "Agustin Codazzi", "Alabajar", "Albania", "Alban", "Alcala", "Aldana", "Alejandria", "Algarrobo", "Algeciras", "Almaguer", "Almeida", "Alpujarra", "Altamira", "Alto Baudo", "Altos del Rosario", "Alvarado", "Amaga", "Amalfi", "Amalfitano", "Ambalema", "Anapoima", "Ancuya", "Andalucia", "Andes", "Angelopolis", "Angostura", "Anori", "Anserma", "Anserma Nuevo", "Ansermanuevo", "Anza", "Anzoategui", "Apartado", "Apia", "Apulo", "Aquitania", "Aracataca", "Aranzazu", "Aratoca", "Arauca", "Arauquita", "Arbelaez", "Arboleda", "Arboledas", "Arboletes", "Arcabuco", "Armenia", "Armero", "Arroyohondo", "Astrea", "Ataco", "Atrato", "Ayapel", "Bagado", "Bahia Solano", "Bajo Baudo", "Balboa", "Baranoa", "Baraya", "Barbacoas", "Barbosa", "Barichara", "Barrancabermeja", "Barrancas", "Barranco de Loba", "Barranquilla", "Becerril", "Belalcazar", "Belen", "Belen de Bajira", "Belen de los Andaquies", "Belen de Umbria", "Bello", "Belmira", "Beltran", "Berbeo", "Betania", "Beitiva", "Bituima", "Boavita", "Bogota D.C.", "Bojaca", "Bojaya", "Bolivar", "Bosconia", "Boyaca", "Briceno", "Bucaramanga", "Bucarasica", "Buenaventura", "Buenavista", "Buenos Aires", "Buga", "Bugalagrande", "Buritica", "Busbanza", "Cabrera", "Caceres", "Cachipay", "Cachira", "Cacota", "Caicedo", "Caicedonia", "Caimito", "Cajamarca", "Cajibio", "Cajica", "Calamar", "Calarca", "Caldas", "Cali", "Calima", "Caloto", "Campamento", "Campo de la Cruz", "Campoalegre", "Campohermoso", "Canalete", "Cantagallo", "Caparrapi", "Capitanejo", "Caqueza", "Carepa", "Carmen de Apicala", "Carmen de Carupa", "Carmen de Viboral", "Carolina", "Cartagena", "Cartagena del Chaira", "Cartago", "Caruru", "Casabianca", "Castilla la Nueva", "Caucasia", "Cepita", "Cerete", "Cerinza", "Cerro San Antonio", "Certegui", "Chaparral", "Chigorodo", "Chiquiza", "Chima", "Chimichagua", "Chinacota", "Chinavita", "Chinchina", "Chinu", "Chipaque", "Chipata", "Chiquinquira", "Chiscas", "Chita", "Chitaga", "Chitaraque", "Chivata", "Choachi", "Choconta", "Cicuco", "Cienaga", "Cienaga de Oro", "Cienega", "Cimitarra", "Circasia", "Cisneros", "Ciudad Bolivar", "Clemencia", "Cocorna", "Coello", "Cogua", "Colombia", "Colon", "Coloso", "Combita", "Concepcion", "Concordia", "Condoto", "Confines", "Consaca", "Contadero", "Contratacion", "Convencion", "Copacabana", "Coper", "Cordoba", "Corinto", "Coromoro", "Corozal", "Corrales", "Cota", "Cotorra", "Covarachia", "Covenas", "Cucaita", "Cucunuba", "Cucuta", "Cuitiva", "Cumbal", "Cumbitara", "Cunday", "Curillo", "Curiti", "Curumani", "Dabeiba", "Dagua", "Dibulla", "Distraccion", "Dolores", "Don Matias", "Dosquebradas", "Duitama", "Durania", "El Aguila", "El Bagre", "El Banco", "El Cairo", "El Calvario", "El Carmen", "El Carmen de Atrato", "El Carmen de Bolivar", "El Carmen de Chucuri", "El Carmen de Viboral", "El Castillo", "El Charco", "El Cocuy", "El Colegio", "El Copey", "El Doncello", "El Dovio", "El Espino", "El Guacamayo", "El Guamo", "El Litoral del San Juan", "El Molino", "El Paso", "El Paujil", "El Penon", "El Pinon", "El Playon", "El Reten", "El Retorno", "El Roble", "El Rosal", "El Rosario", "El Santuario", "El Tablon de Gomez", "El Tambo", "El Tarra", "El Zulia", "Elias", "Entrerrios", "Envigado", "Espinal", "Falan", "Filadelfia", "Filandia", "Firavitoba", "Flandes", "Florencia", "Floresta", "Florida", "Floridablanca", "Fomeque", "Fonseca", "Fontibon", "Fosca", "Francisco Pizarro", "Fredonia", "Fresno", "Frontino", "Fuente de Oro", "Fundacion", "Funes", "Funza", "Fuquene", "Fusagasuga", "Gachala", "Gachancipa", "Gacheta", "Gachonta", "Galan", "Galapa", "Galeras", "Gama", "Gamarra", "Gambita", "Gameza", "Garagoa", "Garzon", "Genova", "Giraldo", "Girardot", "Girardota", "Giron", "Gomez Plata", "Gonzalez", "Gramalote", "Granada", "Guaca", "Guacamayas", "Guacari", "Guachene", "Guacheta", "Guachucal", "Guadalupe", "Guamal", "Guamo", "Guapi", "Guapota", "Guaranda", "Guarne", "Guasca", "Guatape", "Guataqui", "Guatavita", "Guateque", "Guavata", "Guayabal de Siquima", "Guayabetal", "Guayata", "Guepsa", "Guican", "Hacari", "Hatillo de Loba", "Hato", "Hato Corozal", "Hatonuevo", "Heliconia", "Heran", "Herveo", "Hispania", "Hobo", "Honda", "Ibague", "Icononzo", "Iles", "Imues", "Inirida", "Inza", "Ipiales", "Iquira", "Isnos", "Istmina", "Ituango", "Iza", "Jerico", "Jenesano", "Jesus Maria", "Jordan", "Juan de Acosta", "Junin", "Jurado", "La Argentina", "La Belleza", "La Calera", "La Capilla", "La Ceja", "La Chorrera", "La Cruz", "La Cumbre", "La Dorada", "La Esperanza", "La Estrella", "La Florida", "La Gloria", "La Jagua de Ibirico", "La Jagua del Pilar", "La Llanada", "La Macarena", "La Merced", "La Mesa", "La Montanita", "La Palma", "La Paz", "La Pedrera", "La Pena", "La Pintada", "La Plata", "La Playa", "La Primavera", "La Salina", "La Sierra", "La Tola", "La Union", "La Uvita", "La Vega", "La Victoria", "La Virginia", "Labateca", "Landazuri", "Lebrija", "Leguizamo", "Lenguazaque", "Leon", "Leticia", "Libano", "Liborina", "Linares", "Lloro", "Lopez de Micay", "Lorica", "Los Andes", "Los Cordobas", "Los Palmitos", "Los Patios", "Los Santos", "Lourdes", "Luruaco", "Macanal", "Macaravita", "Magangu", "Magui Payan", "Mahates", "Maicao", "Majagual", "Malaga", "Malambo", "Mallama", "Manati", "Manaure", "Manaure Balcon del Cesar", "Manizales", "Manta", "Manzanares", "Mapiripán", "Mapiripana", "Margarita", "Maria La Baja", "Marinilla", "Maripi", "Mariquita", "Marmato", "Marquetalia", "Marsella", "Marulanda", "Medellin", "Medina", "Medio Atrato", "Medio Baudo", "Medio San Juan", "Melgar", "Mercaderes", "Mesetas", "Milan", "Miraflores", "Miranda", "Miriti-Parana", "Molagavita", "Momil", "Mompox", "Mongua", "Mongui", "Moniquira", "Montebello", "Montecristo", "Montelibano", "Montenegro", "Monteria", "Monterrey", "Morales", "Morelia", "Morroa", "Mosquera", "Motavita", "Murillo", "Murindo", "Mutata", "Mutiscua", "Muzo", "Narino", "Nataga", "Natagaima", "Nechi", "Neira", "Neiva", "Nemocon", "Nilo", "Nimaima", "Novita", "Nunchia", "Noqui", "Ocamonte", "Ocana", "Oiba", "Oicata", "Olaya", "Olaya Herrera", "Onzaga", "Oporapa", "Orito", "Ortega", "Ospina", "Otanche", "Ovejas", "Pacho", "Pachavita", "Paez", "Paicol", "Pailitas", "Paipa", "Pajarito", "Palmar", "Palmar de Varela", "Palmas del Socorro", "Palmira", "Palmito", "Pamplona", "Pamplonita", "Pandi", "Panqueba", "Paramo", "Paratebueno", "Pasca", "Pasto", "Patia", "Payande", "Paz de Ariporo", "Paz de Rio", "Pedraza", "Pelaya", "Pensilvania", "Peque", "Pereira", "Penol", "Pesca", "Piamonte", "Piedecuesta", "Piedras", "Piendamo", "Pijao", "Pijino del Carmen", "Pinchote", "Pinillos", "Pisba", "Pitalito", "Pivijay", "Planadas", "Planeta Rica", "Plato", "Policarpa", "Polonuevo", "Ponedera", "Popayan", "Pore", "Potosi", "Pradera", "Prado", "Providencia", "Pueblo Bello", "Pueblo Nuevo", "Pueblo Rico", "Puebloviejo", "Puente Nacional", "Puerres", "Puerto Alegria", "Puerto Arica", "Puerto Asis", "Puerto Berrio", "Puerto Boyaca", "Puerto Caicedo", "Puerto Carreno", "Puerto Colombia", "Puerto Concordia", "Puerto Escondido", "Puerto Gaitan", "Puerto Guzman", "Puerto Leguizamo", "Puerto Libertador", "Puerto Lleras", "Puerto Lopez", "Puerto Nare", "Puerto Narino", "Puerto Parra", "Puerto Rondon", "Puerto Salgar", "Puerto Santander", "Puerto Tejada", "Puerto Triunfo", "Puerto Wilches", "Pupiales", "Purace", "Purificacion", "Purisima", "Quebradanegra", "Quibdo", "Quimbaya", "Quinchia", "Quipama", "Quipile", "Ragonvalia", "Ramiriqui", "Raquira", "Recetor", "Remedios", "Remolino", "Repelon", "Restrepo", "Ricaurte", "Riofrio", "Riohacha", "Rionegro", "Riosucio", "Risaralda", "Rivera", "Roberto Payan", "Roldanillo", "Roncesvalles", "Rondon", "Ropon", "Rovira", "Sabana de Torres", "Sabanagrande", "Sabanalarga", "Sabaneta", "Sahagun", "Saladoblanco", "Salamina", "Salazar", "Salento", "Salgar", "Samaca", "Samana", "Samaniego", "San Agustin", "San Alberto", "San Andres", "San Andres de Cuerquia", "San Andres de Sotavento", "San Antero", "San Antonio", "San Antonio del Tequendama", "San Bernardo", "San Bernardo del Viento", "San Calixto", "San Carlos", "San Carlos de Guaroa", "San Cayetano", "San Diego", "San Eduardo", "San Estanislao", "San Felipe", "San Fernando", "San Francisco", "San Gil", "San Jacinto", "San Jacinto del Cauca", "San Jose", "San Jose de la Montaña", "San Jose de Miranda", "San Jose de Pare", "San Jose de Ure", "San Jose del Fragua", "San Jose del Guaviare", "San Jose del Palmar", "San Juan de Arama", "San Juan de Betulia", "San Juan de Rioseco", "San Juan de Uraba", "San Juan del Cesar", "San Juan Nepomuceno", "San Juanito", "San Lorenzo", "San Luis", "San Luis de Cubarral", "San Luis de Gaceno", "San Luis de Palenque", "San Marcos", "San Martin", "San Martin de Loba", "San Mateo", "San Miguel", "San Miguel de Sema", "San Onofre", "San Pablo", "San Pablo de Borbur", "San Pedro", "San Pedro de Cartago", "San Pedro de Uraba", "San Pelayo", "San Rafael", "San Roque", "San Sebastian", "San Sebastian de Buenavista", "San Vicente", "San Vicente de Chucuri", "San Vicente del Caguan", "San Zenon", "Santa Ana", "Santa Barbara", "Santa Barbara de Pinto", "Santa Catalina", "Santa Helena del Opon", "Santa Isabel", "Santa Lucia", "Santa Marta", "Santa Rosa", "Santa Rosa de Cabal", "Santa Rosa de Osos", "Santa Rosa de Viterbo", "Santa Rosa del Sur", "Santa Rosalia", "Santa Sofia", "Santacruz", "Santafe de Antioquia", "Santander de Quilichao", "Santiago", "Santo Domingo", "Santo Tomas", "Santuario", "Sapuyes", "Sardinata", "Sasaima", "Sativasur", "Sativanorte", "Segovia", "Serrania de La Macarena", "Siachoque", "Sibate", "Sibundoy", "Silos", "Silvania", "Silvia", "Simacota", "Simijaca", "Simiti", "Since", "Sincelejo", "Sipi", "Sitionuevo", "Soacha", "Soata", "Socha", "Socorro", "Sogamoso", "Solano", "Soledad", "Solita", "Somondoco", "Sonson", "Sopetran", "Soplaviento", "Sopo", "Sora", "Soraca", "Sorata", "Sotaquira", "Sotara", "Suaita", "Suaza", "Suesca", "Supata", "Supia", "Surata", "Sutamarchan", "Sutatausa", "Sutatenza", "Tabio", "Tado", "Talaigua Nuevo", "Tamalameque", "Tamara", "Tame", "Tamesis", "Taminango", "Tangua", "Taraira", "Taraza", "Tarqui", "Tarso", "Tasco", "Tauramena", "Tausa", "Tello", "Teorama", "Teruel", "Tibacuy", "Tibana", "Tibasosa", "Tibirita", "Tibu", "Tierralta", "Timana", "Timbio", "Timbiqui", "Tinjaca", "Tipacoque", "Tiquisio", "Titiribí", "Toca", "Togui", "Toledo", "Tolu", "Toluviejo", "Tona", "Topaga", "Topaipi", "Toribio", "Toro", "Totoro", "Trinidad", "Trujillo", "Tubara", "Tuchin", "Tuquerres", "Turbaco", "Turbana", "Turbo", "Tunja", "Turmeque", "Tuta", "Tutaza", "Ubala", "Ubaque", "Ubate", "Ulloa", "Une", "Uninan", "Untama", "Uramita", "Uribe", "Uribia", "Urrao", "Urumita", "Usiacuri", "Valdivia", "Valencia", "Valle de San Jose", "Valle de San Juan", "Valle del Guamuez", "Valledupar", "Valparaiso", "Vegachi", "Velez", "Venadillo", "Venecia", "Vergara", "Versalles", "Vetas", "Viani", "Victoria", "Vigia del Fuerte", "Vijesi", "Villa del Rosario", "Villa de Leyva", "Villa Rica", "Villagarzon", "Villamaria", "Villanueva", "Villapinzon", "Villarrica", "Villavicencio", "Villavieja", "Villeta", "Viota", "Viraracha", "Vista Hermosa", "Viterbo", "Yarumal", "Yacopi", "Yaguara", "Yali", "Yanacona", "Yolombo", "Yondo", "Yopal", "Yotoco", "Yumbo", "Zapatoca", "Zapayan", "Zaragoza", "Zarzal", "Zetaquira", "Zipapon", "Zipaquira", "Zona Bananera"]
+    transformations:
+      - trim
+      - smart_title_case
+    invalid_action: flag
+
+  Año de nacimiento:
+    label: "birthdate_year"
+    note: "Single-choice question. Patient's year of birth as recorded in the medical record, or an inference."
+    dtype: int
+    nullable: false
+    raw_dtype: date_string
+    transformations: *year_transforms
+    min: 1900
+    max: 2025
+    special_null_values: [1800]
+    invalid_action: flag
+
+  Mes de nacimiento:
+    label: "birthdate_month"
+    note: "Single-choice question. Patient's month of birth as recorded in the medical record"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Enero"
+      - "Febrero"
+      - "Marzo"
+      - "Abril"
+      - "Mayo"
+      - "Junio"
+      - "Julio"
+      - "Agosto"
+      - "Septiembre"
+      - "Octubre"
+      - "Noviembre"
+      - "Diciembre"
+    transformations:
+      - trim
+      - extract_month_name
+      - empty_to_null
+    invalid_action: flag
+
+  age:
+    label: "Edad actual del paciente en años cumplidos"
+    note: "Calculated patient age baseline measurement metric based on clinical file tracking date updates."
+    dtype: int
+    nullable: false
+    min: 0
+    max: 120
+    transformations:
+      - to_int
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # RESIDENCE
+  # ---------------------------------------------------------------------------
+
+  País de residencia:
+    label: "country_residence"
+    note: "Open-ended question. Patient's country of residence. It could be any country ~ 191"
+    dtype: categorical
+    nullable: false
+    fuzzy_match: true 
+    threshold: 88
+    canonical: ["Afganistán", "Albania", "Argelia", "Andorra", "Angola", "Antigua y Barbuda", "Argentina", "Armenia", "Australia", "Austria", "Azerbaiyán", "Bahamas", "Baréin", "Bangladés", "Barbados", "Bielorrusia", "Bélgica", "Belice", "Benín", "Bután", "Bolivia", "Bosnia y Herzegovina", "Botsuana", "Brasil", "Brunéi", "Bulgaria", "Burkina Faso", "Burundi", "Cabo Verde", "Camboya", "Camerún", "Canadá", "República Centroafricana", "Chad", "Chile", "China", "Colombia", "Comoras", "Congo (República del)", "Congo (República Democrática del)", "Costa Rica", "Croacia", "Cuba", "Chipre", "República Checa", "Dinamarca", "Yibuti", "Dominica", "República Dominicana", "Ecuador", "Egipto", "El Salvador", "Guinea Ecuatorial", "Eritrea", "Estonia", "Suazilandia", "Etiopía", "Fiyi", "Finlandia", "Francia", "Gabón", "Gambia", "Georgia", "Alemania", "Ghana", "Grecia", "Granada", "Guatemala", "Guinea", "Guinea-Bisáu", "Guyana", "Haití", "Honduras", "Hungría", "Islandia", "India", "Indonesia", "Irán", "Irak", "Irlanda", "Israel", "Italia", "Jamaica", "Japón", "Jordania", "Kazajistán", "Kenia", "Kiribati", "Corea del Norte", "Corea del Sur", "Kosovo", "Kuwait", "Kirguistán", "Laos", "Letonia", "Líbano", "Lesoto", "Liberia", "Libia", "Liechtenstein", "Lituania", "Luxemburgo", "Madagascar", "Malaui", "Malasia", "Maldivas", "Malí", "Malta", "Islas Marshall", "Mauritania", "Mauricio", "México", "Micronesia", "Moldavia", "Mónaco", "Mongolia", "Montenegro", "Marruecos", "Mozambique", "Myanmar", "Namibia", "Nauru", "Nepal", "Países Bajos", "Nueva Zelanda", "Nicaragua", "Níger", "Nigeria", "Macedonia del Norte", "Noruega", "Omán", "Pakistán", "Palaos", "Palestina", "Panamá", "Papúa Nueva Guinea", "Paraguay", "Perú", "Filipinas", "Polonia", "Portugal", "Catar", "Rumanía", "Rusia", "Ruanda", "San Cristóbal y Nieves", "Santa Lucía", "San Vicente y las Granadinas", "Samoa", "San Marino", "Santo Tomé y Príncipe", "Arabia Saudita", "Senegal", "Serbia", "Seychelles", "Sierra Leona", "Singapur", "Eslovaquia", "Eslovenia", "Islas Salomón", "Somalia", "Sudáfrica", "Sudán del Sur", "España", "Sri Lanka", "Sudán", "Surinam", "Suecia", "Suiza", "Siria", "Taiwán", "Tayikistán", "Tanzania", "Tailandia", "Timor Oriental", "Togo", "Tonga", "Trinidad y Tobago", "Túnez", "Turquía", "Turkmenistán", "Tuvalu", "Uganda", "Ucrania", "Emiratos Árabes Unidos", "Reino Unido", "Estados Unidos", "Uruguay", "Uzbekistán", "Vanuatu", "Ciudad del Vaticano", "Venezuela", "Vietnam", "Yemen", "Zambia", "Zimbabue"]
+    transformations:
+      - trim
+      - smart_title_case
+    invalid_action: flag
+
+  Departamento de residencia: 
+    label: "department_residence"
+    note: "Open-ended question. Department of residence (Colombia). It appears if country_residence is Colombia."
+    dtype: categorical
+    nullable: true
+    fuzzy_match: true
+    threshold: 88
+    canonical: ["Amazonas", "Antioquia", "Arauca", "Atlantico", "Bolivar", "Boyaca", "Caldas", "Caqueta", "Casanare", "Cauca", "Cesar", "Choco", "Cordoba", "Cundinamarca", "Guainia", "Guaviare", "Huila", "La Guajira", "Magdalena", "Meta", "Nariño", "Norte de Santander", "Putumayo", "Quindio", "Risaralda", "San Andres y Providencia", "Santander", "Sucre", "Tolima", "Valle del Cauca", "Vaupes", "Vichada"]
+    transformations:
+      - trim
+      - smart_title_case
+    invalid_action: flag
+
+  Municipio o corregimiento de residencia en el Valle de Aburrá:
+    label: "municipality_residence"
+    note: "Single-choice question. It appears if department_residence is Antioquia."
+    dtype: string
+    nullable: true
+    allowed:
+      - "Medellín"
+      - "Itagüí"
+      - "Envigado"
+      - "Sabaneta"
+      - "Caldas"
+      - "La Estrella"
+      - "Bello"
+      - "Barbosa"
+      - "Copacabana"
+      - "Girardota"
+      - "Corregimiento de Altavista"
+      - "Corregimiento de Palmitas"
+      - "Corregimiento de San Antonio de Prado"
+      - "Corregimiento de San Cristóbal"
+      - "Corregimiento de Santa Elena"
+      - "Valle de Aburrá sin especificar"
+      - "Residencia fuera del Valle de Aburrá"
+    transformations:
+      - trim
+      - empty_to_null
+    invalid_action: flag
+
+  Residencia fuera del Valle de Aburrá: 
+    label: "another_municipality_res"
+    note: "Open-ended question. It appears if municipality_residence is option index 16."
+    nullable: true
+    dtype: categorical
+    transformations:
+      - trim
+      - smart_title_case
+    invalid_action: flag
+
+  Dirección de residencia:
+    label: "address_res"
+    note: "Open-ended question. Patient's current residential address"
+    dtype: string
+    nullable: true
+    transformations:
+      - sanitize
+      - trim
+      - lowercase
+      - empty_to_null     
+    invalid_action: flag 
+
+  Nombre barrio o vereda de residencia:
+    label: "neighborhood_residence"
+    note: "Open-ended question. Secondary structural regional lookup mapping criteria."
+    nullable: true
+    dtype: categorical
+    transformations:
+      - trim
+      - smart_title_case
+    invalid_action: flag
+
+  Comuna de residencia:
+    label: "commune_residence"
+    note: "Single-choice question. It appears if municipality_residence is Medellín."
+    dtype: string
+    nullable: true
+    allowed:
+      - "Popular"
+      - "Santa Cruz"
+      - "Manrique"
+      - "Aranjuez"
+      - "Castilla"
+      - "Doce de Octubre"
+      - "Robledo"
+      - "Villa Hermosa"
+      - "Buenos Aires"
+      - "La Candelaria"
+      - "Laureles-Estadio"
+      - "La América"
+      - "San Javier"
+      - "El Poblado"
+      - "Guayabal"
+      - "Belén"
+    transformations:
+      - trim
+      - extract_comuna_name
+      - empty_to_null
+    invalid_action: flag
+    
+  Área de residencia:
+    label: "area_residence"
+    note: "Single-choice question"
+    dtype: string
+    nullable: true
+    allowed: ["Urbano", "Rural"]
+    transformations:
+      - trim
+      - empty_to_null
+    invalid_action: flag
+
+  Tipo de cobertura en la atención:
+    label: "healthcare_system"
+    note: "Single-choice question. Patient's current health system affiliation type as recorded in the medical record"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Contributivo"
+      - "Subsidiado"
+      - "Especial (Fuerzas Militares, Policía Nacional, Magisterio, Ecopetrol)"
+      - "No tiene afiliación al sistema de salud"
+      - "Póliza de seguro"
+      - "Particular"
+    transformations:
+      - trim
+      - empty_to_null
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # DIAGNOSIS
+  # ---------------------------------------------------------------------------
+
+  Códigos diagnósticos reportados/E100 diabetes mellitus insulinodependiente con coma:
+    label: "diagnostic_codes/0"
+    dtype: dichotomous

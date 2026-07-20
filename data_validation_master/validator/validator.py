@@ -1,251 +1,588 @@
-import yaml
-import pandas as pd
-from pathlib import Path
-from rapidfuzz import process, fuzz
+"""
+validator.py
+Core DataValidator class for validation_schema_v2.yaml.
 
-from .rules import ValidationSchema, VariableRule
-from .transformations import TRANSFORMATIONS
-from .audit import AuditLog
+Usage:
+    from validator.validator import DataValidator
+
+    v = DataValidator(
+        data_path   = "data/raw.csv",
+        schema_path = "validation_schema_v2.yaml",
+    )
+    v.validate().report().save()
+
+Per-column pipeline (executed in this order):
+    1.  Global preprocess   — null sentinel strings → pd.NA (object cols only)
+    2.  Pre-encode transforms — trim, lowercase, smart_title_case, etc.
+    3.  Fuzzy matching      — correct typos against canonical list (categorical)
+    4.  Post-encode transforms — encode (text → int) if present
+    5.  Special null values — sentinel ints/strings → pd.NA (not errors)
+    6.  Nullability check   — flag unexpected pd.NA when nullable=false
+    7.  Allowed values      — flag values outside rule.allowed
+    8.  Range check         — flag values outside rule.min / rule.max
+    9.  Max-length check    — flag strings exceeding rule.max_length
+    10. Pattern check       — flag strings failing rule.pattern regex
+    11. Dedup shadow cols   — generate <label>_key for deduplication
+    12. Column rename       — rename raw header to rule.label in output
+"""
+
+from __future__ import annotations
+
+import unicodedata
+from pathlib import Path
+from typing import Optional
+
+import pandas as pd
+import yaml
+from rapidfuzz import fuzz, process
+
+from .audit import AuditLog, Reason
+from .rules import GlobalConfig, ValidationSchema, VariableRule
+from .transformations import TRANSFORMATIONS, apply_map_values
+
+# Project root = two levels above this file
+# STEPT1D/data_validation_master/validator/validator.py
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 class DataValidator:
+    """
+    Reads a raw CSV and a validation schema YAML, applies all rules,
+    and produces a cleaned CSV + full audit log.
+    """
 
     def __init__(
         self,
-        data_path: str,
-        schema_path: str,
-        csv_sep: str = ";",           # REDCap exports from Colombian locale use ";"
+        data_path:    str,
+        schema_path:  str,
+        csv_sep:      str = ";",
         csv_encoding: str = "utf-8",
-        csv_skiprows: int = 0,
-    ):
+    ) -> None:
+        print(f"  Loading data   → {data_path}")
+        print(f"  Loading schema → {schema_path}")
+
         self.df = pd.read_csv(
             data_path,
             sep=csv_sep,
             encoding=csv_encoding,
-            skiprows=csv_skiprows if csv_skiprows > 0 else None,
-            on_bad_lines="warn",      # warn instead of crash on malformed rows
-            low_memory=False,         # avoids dtype guessing issues on large files
-            keep_default_na=False
+            on_bad_lines="warn",
+            low_memory=False,
+            keep_default_na=False,   # prevent pandas auto-NA; we do it ourselves
+            dtype=str,          # ADD THIS — read everything as string first
+                        # the validator then converts to the right typ
         )
+        print(f"  Raw shape: {self.df.shape}")
+
         self.schema  = self._load_schema(schema_path)
         self.audit   = AuditLog()
         self.cleaned = self.df.copy()
 
-        print(f"Loaded data    : {self.df.shape[0]} rows × {self.df.shape[1]} columns")
-        print(f"Loaded schema  : {len(self.schema.variables)} variables defined")
-
-    # -------------------------------------------------------------------------
+    # =========================================================================
     # Schema loading
-    # -------------------------------------------------------------------------
+    # =========================================================================
 
     def _load_schema(self, path: str) -> ValidationSchema:
         with open(path, encoding="utf-8") as f:
             raw = yaml.safe_load(f)
-        return ValidationSchema(
-            global_config=raw.get("global", {}),
-            variables={
-                k: VariableRule(**v)
-                for k, v in raw["variables"].items()
-            }
+
+        global_cfg = GlobalConfig(**raw.get("global", {}))
+
+        variables: dict[str, VariableRule] = {}
+        errors = 0
+        for key, cfg in raw.get("variables", {}).items():
+            if not isinstance(cfg, dict):
+                print(f"  WARNING: '{key}' has no config dict — skipped.")
+                continue
+            try:
+                variables[key] = VariableRule(**cfg)
+            except Exception as e:
+                print(f"  ERROR parsing '{key}': {e}")
+                errors += 1
+
+        if errors:
+            print(f"\n  {errors} schema variable(s) failed to parse — fix before running.\n")
+
+        return ValidationSchema(global_config=global_cfg, variables=variables)
+
+    # =========================================================================
+    # Step 1 — Global preprocessor
+    # =========================================================================
+
+
+    def _global_preprocess(self) -> None:
+        """
+        Step 1a — replace null sentinel strings with pd.NA (object cols only).
+        Step 1b — replace float NaN with pd.NA on ALL columns.
+        """
+        null_strings = self.schema.global_config.null_strings
+
+        # replace null strings on string/object columns
+        if null_strings:
+            object_cols = self.cleaned.select_dtypes(include="object").columns
+            self.cleaned[object_cols] = (
+                self.cleaned[object_cols].replace(null_strings, pd.NA)
+            )
+
+        # replace float NaN with pd.NA on ALL columns
+        # this catches rows where the CSV had an empty cell read as float NaN
+        self.cleaned = self.cleaned.where(self.cleaned.notna(), other=pd.NA)
+
+    # =========================================================================
+    # Steps 2 & 4 — Transformation engine
+    # =========================================================================
+
+    def _apply_single_transform(
+        self,
+        series: pd.Series,
+        rule:   VariableRule,
+        t_name: str,
+    ) -> pd.Series:
+        """
+        Apply one named transformation to a Series.
+
+        Three transforms require rule-level context and are handled here
+        rather than in transformations.py:
+            encode      — uses rule.encoding  (text → int)
+            map_values  — uses rule.map_values (text → text or text → int)
+            coerce      — uses rule.coerce     (text → text or text → int,
+                                                values not in map pass through)
+        All others are dispatched to the TRANSFORMATIONS registry.
+        """
+        label = rule.label or "unknown"
+
+        # ── encode: text → int via rule.encoding ─────────────────────────────
+        if t_name == "encode":
+            encoded   = series.map(rule.encoding)
+            no_match  = series[series.notna() & encoded.isna()]
+            for idx, val in no_match.items():
+                self.audit.log(
+                    col=label, index=idx, raw_value=val,
+                    reason=Reason.ENCODE_NO_MATCH,
+                )
+            return encoded
+
+        # ── map_values: text → text via rule.map_values ──────────────────────
+        if t_name == "map_values":
+            mapping = rule.map_values or {}
+            result  = apply_map_values(series, mapping)
+            # log values that had no match in the map (they pass through
+            # unchanged and will be caught by the allowed check later)
+            if mapping:
+                no_match = series[series.notna() & ~series.isin(mapping.keys())]
+                for idx, val in no_match.items():
+                    self.audit.log(
+                        col=label, index=idx, raw_value=val,
+                        reason=Reason.MAP_VALUES_NO_MATCH,
+                    )
+            return result
+
+        # ── coerce: text → text, values not in map pass through ──────────────
+        if t_name == "coerce":
+            mapping  = rule.coerce or {}
+            mapped   = series.map(mapping)
+            in_map   = series.isin(mapping.keys())
+            # keep original where not in map
+            return series.where(~in_map, other=mapped)
+
+        # ── standard transforms from registry ────────────────────────────────
+        if t_name in TRANSFORMATIONS:
+            return TRANSFORMATIONS[t_name](series)
+
+        raise ValueError(
+            f"Unknown transformation '{t_name}' on label='{label}'. "
+            f"Add it to transformations.py and the TRANSFORMATIONS dict."
         )
 
-    # -------------------------------------------------------------------------
-    # Global pre-processing
-    # -------------------------------------------------------------------------
-
-    def _global_preprocess(self):
-        """Replace all null sentinel strings with pd.NA across every column."""
-        null_strings = self.schema.global_config.null_strings
-        self.cleaned.replace(null_strings, pd.NA, inplace=True)
-
-    # -------------------------------------------------------------------------
-    # Transformation pipeline
-    # -------------------------------------------------------------------------
-
-    def _apply_transformations(
-        self, series: pd.Series, rule: VariableRule
+    def _run_transforms(
+        self,
+        series:      pd.Series,
+        rule:        VariableRule,
+        stop_before: Optional[str] = None,
+        start_at:    Optional[str] = None,
     ) -> pd.Series:
+        """
+        Run the rule's transformation list, optionally:
+          stop_before — stop when this transform name is reached
+          start_at    — skip transforms until this name is reached
+        Used to split pre-fuzzy and post-fuzzy transforms cleanly.
+        """
+        found = (start_at is None)   # if no start_at, begin immediately
+
         for t_name in rule.transformations:
-            if t_name == "encode":
-                series = series.map(rule.encoding)
-            elif t_name == "coerce":
-                series = series.map(rule.coerce)
-            elif t_name in TRANSFORMATIONS:
-                series = TRANSFORMATIONS[t_name](series)
-            else:
-                raise ValueError(
-                    f"Unknown transformation '{t_name}' — "
-                    f"add it to transformations.py"
-                )
+            if start_at and t_name == start_at:
+                found = True
+            if not found:
+                continue
+            if stop_before and t_name == stop_before:
+                break
+            series = self._apply_single_transform(series, rule, t_name)
+
         return series
 
-    # -------------------------------------------------------------------------
-    # Fuzzy matching
-    # -------------------------------------------------------------------------
+    # =========================================================================
+    # Step 3 — Fuzzy matching
+    # =========================================================================
 
-    def _apply_fuzzy(
-        self, series: pd.Series, rule: VariableRule, col: str
-    ) -> pd.Series:
-        """Map unique raw values to canonical list using fuzzy matching."""
-        canonical = rule.canonical
+    def _apply_fuzzy(self, series, rule, col):
+        import unicodedata
+
+        def _strip(text: str) -> str:
+            """Remove accents for comparison only."""
+            nfkd = unicodedata.normalize("NFKD", str(text).lower())
+            return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+        canonical      = rule.canonical
+        # build a map: accent-stripped canonical → original canonical
+        # e.g. "peru" → "Perú", "colombia" → "Colombia"
+        stripped_map   = {_strip(c): c for c in canonical}
+        stripped_canon = list(stripped_map.keys())
+
         threshold = rule.threshold
+        label     = rule.label or col
+        cache: dict = {}
 
-        def _match(val):
-            if pd.isna(val):
-                return val
+        for val in series.dropna().unique():
+            val_stripped = _strip(str(val))     # "Peru" → "peru"
+
             result = process.extractOne(
-                val,
-                canonical,
+                val_stripped,
+                stripped_canon,                 # compare against ["peru", "colombia", ...]
                 scorer=fuzz.WRatio,
                 score_cutoff=threshold,
             )
             if result:
-                self.audit.log(
-                    col, None, val,
-                    reason="fuzzy_corrected",
-                    fixed_value=result[0],
-                    confidence=result[1],
-                )
-                return result[0]
+                matched_stripped, score, _ = result
+                matched_original = stripped_map[matched_stripped]  # "peru" → "Perú"
+                cache[val] = matched_original
+                if str(val) != matched_original:
+                    self.audit.log(
+                        col=label, index=None,
+                        raw_value=val,
+                        reason=Reason.FUZZY_CORRECTED,
+                        fixed_value=matched_original,
+                        confidence=round(score, 2),
+                    )
             else:
-                self.audit.log(col, None, val, reason="fuzzy_no_match")
-                return pd.NA
+                cache[val] = pd.NA
+                self.audit.log(
+                    col=label, index=None,
+                    raw_value=val,
+                    reason=Reason.FUZZY_NO_MATCH,
+                )
 
-        return series.apply(_match)
+        return series.map(cache)
+    # =========================================================================
+    # Step 5 — Special null values
+    # =========================================================================
 
-    # -------------------------------------------------------------------------
-    # Per-column validation
-    # -------------------------------------------------------------------------
+    def _apply_special_nulls(
+        self,
+        series: pd.Series,
+        rule:   VariableRule,
+        col:    str,
+    ) -> pd.Series:
+        """
+        Convert known sentinel values (e.g. 1800, 99) to pd.NA.
+        These are NOT data errors — they are agreed-upon codes for "unknown".
+        Logged as sentinel_value_set_to_null for traceability.
 
-    def _validate_column(self, col: str, rule: VariableRule):
+        Must run AFTER encode/map_values so integer codes are already in place.
+        """
+        if not rule.special_null_values:
+            return series
+
+        label         = rule.label or col
+        sentinel_mask = series.isin(rule.special_null_values)
+
+        for idx, val in series[sentinel_mask].items():
+            self.audit.log(
+                col=label, index=idx,
+                raw_value=val,
+                reason=Reason.SENTINEL_TO_NULL,
+            )
+
+        return series.where(~sentinel_mask, other=pd.NA)
+
+    # =========================================================================
+    # Steps 6–10 — Validation checks (read-only, only log — don't mutate)
+    # =========================================================================
+
+    def _check_nullable(
+        self, series: pd.Series, rule: VariableRule, col: str
+    ) -> None:
+        """Flag rows where the value is pd.NA but nullable=false."""
+        if rule.nullable:
+            return
+        label = rule.label or col
+        for idx, val in series[series.isna()].items():
+            self.audit.log(
+                col=label, index=idx,
+                raw_value=val, reason=Reason.UNEXPECTED_NULL,
+            )
+
+    def _check_allowed(
+        self, series: pd.Series, rule: VariableRule, col: str
+    ) -> None:
+        """Flag values not present in rule.allowed."""
+        if not rule.allowed:
+            return
+        label        = rule.label or col
+        allowed_vals = [v for v in rule.allowed if v is not None]
+        invalid      = series[series.notna() & ~series.isin(allowed_vals)]
+        for idx, val in invalid.items():
+            self.audit.log(
+                col=label, index=idx,
+                raw_value=val, reason=Reason.VALUE_NOT_IN_ALLOWED,
+            )
+
+    def _check_range(
+        self, series: pd.Series, rule: VariableRule, col: str
+    ) -> None:
+        """Flag numeric values outside [rule.min, rule.max]."""
+        if rule.min is None and rule.max is None:
+            return
+        label   = rule.label or col
+        numeric = pd.to_numeric(series, errors="coerce")
+
+        if rule.min is not None:
+            below = series[numeric.notna() & (numeric < rule.min)]
+            for idx, val in below.items():
+                self.audit.log(
+                    col=label, index=idx,
+                    raw_value=val, reason=Reason.BELOW_MIN,
+                )
+
+        if rule.max is not None:
+            above = series[numeric.notna() & (numeric > rule.max)]
+            for idx, val in above.items():
+                self.audit.log(
+                    col=label, index=idx,
+                    raw_value=val, reason=Reason.ABOVE_MAX,
+                )
+
+    def _check_max_length(
+        self, series: pd.Series, rule: VariableRule, col: str
+    ) -> None:
+        """Flag strings longer than rule.max_length."""
+        if not rule.max_length or series.dtype != object:
+            return
+        label    = rule.label or col
+        too_long = series[series.notna() & (series.str.len() > rule.max_length)]
+        for idx, val in too_long.items():
+            self.audit.log(
+                col=label, index=idx,
+                raw_value=val, reason=Reason.EXCEEDS_MAX_LENGTH,
+            )
+
+    def _check_pattern(
+        self, series: pd.Series, rule: VariableRule, col: str
+    ) -> None:
+        """Flag strings that do not match rule.pattern regex."""
+        if not rule.pattern or series.dtype != object:
+            return
+        label = rule.label or col
+
+        try:
+            import regex as _re
+        except ImportError:
+            import re as _re      # fallback: no \p{L} support
+
+        def _fails(val) -> bool:
+            if pd.isna(val):
+                return False
+            return not bool(_re.match(rule.pattern, str(val)))
+
+        mismatched = series[series.apply(_fails)]
+        for idx, val in mismatched.items():
+            self.audit.log(
+                col=label, index=idx,
+                raw_value=val, reason=Reason.PATTERN_MISMATCH,
+            )
+
+    # =========================================================================
+    # Step 11 — Deduplication shadow columns
+    # =========================================================================
+
+    def _generate_dedup_key(self, target_col: str, rule: VariableRule) -> None:
+        """
+        Generate a <label>_key shadow column for deduplication.
+        The key is lowercase + accent-stripped so "María" == "Maria".
+        Only generated when dedup_key=true AND dedup_normalize=true.
+        """
+        if not (rule.dedup_key and rule.dedup_normalize and rule.label):
+            return
+
+        def _normalize(val) -> str:
+            if pd.isna(val):
+                return val
+            nfkd = unicodedata.normalize("NFKD", str(val).lower())
+            return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+        key_col = f"{rule.label}_key"
+        self.cleaned[key_col] = self.cleaned[target_col].apply(_normalize)
+
+    # =========================================================================
+    # Per-column orchestrator
+    # =========================================================================
+
+    def _validate_column(self, col: str, rule: VariableRule) -> None:
+        """
+        Run the full validation pipeline for one column.
+
+        Transform order is split around fuzzy matching:
+            pre-fuzzy:  everything in rule.transformations up to (not including) 'encode'
+            fuzzy:      applied on cleaned text
+            post-fuzzy: 'encode' and anything after it
+
+        The cleaned result is written back to self.cleaned.
+        If rule.label differs from col, the column is renamed.
+        """
         series = self.cleaned[col].copy()
 
-        # 1 — apply transformation chain
-        series = self._apply_transformations(series, rule)
+        # ── Step 2: pre-fuzzy transforms ─────────────────────────────────────
+        # run everything before 'encode' (trim, lowercase, map_values, etc.)
+        series = self._run_transforms(series, rule, stop_before="encode")
 
-        # 2 — fuzzy matching for categoricals
+        # ── Step 3: fuzzy matching ────────────────────────────────────────────
         if rule.fuzzy_match and rule.canonical:
             series = self._apply_fuzzy(series, rule, col)
 
-        # 3 — special null values (ADD THIS BLOCK — must run before min/max check)
-        if rule.special_null_values:
-            sentinel_mask = series.isin(rule.special_null_values)
-            if sentinel_mask.any():
-                #for idx, val in series[sentinel_mask].items():
-                #    self.audit.log(
-                #        col=col,
-                #        index=idx,
-                #        raw_value=val,
-                #        reason="sentinel_value_set_to_null",
-                #        fixed_value=None,
-                #        confidence=None
-                #    )
-                series = series.where(~sentinel_mask, other=pd.NA)
-            
-        # 3 — nullability check
-        if not rule.nullable:
-            nulls = series[series.isna()]
-            for idx, val in nulls.items():
-                self.audit.log(col, idx, val, reason="unexpected_null")
+        # ── Step 4: post-fuzzy transforms ─────────────────────────────────────
+        # run 'encode' and everything after it
+        series = self._run_transforms(series, rule, start_at="encode")
 
-        # 4 — range checks
-        if rule.min is not None:
-            out_of_range = series[series.notna() & (series < rule.min)]
-            for idx, val in out_of_range.items():
-                self.audit.log(col, idx, val, reason="below_min")
+        # ── Step 5: special null values ───────────────────────────────────────
+        series = self._apply_special_nulls(series, rule, col)
 
-        if rule.max is not None:
-            out_of_range = series[series.notna() & (series > rule.max)]
-            for idx, val in out_of_range.items():
-                self.audit.log(col, idx, val, reason="above_max")
+        # ── Step 6: nullability ───────────────────────────────────────────────
+        self._check_nullable(series, rule, col)
 
-        # 5 — max_length check for strings
-        if rule.max_length is not None and series.dtype == object:
-            too_long = series[series.notna() & (series.str.len() > rule.max_length)]
-            for idx, val in too_long.items():
-                self.audit.log(col, idx, val, reason="exceeds_max_length")
+        # ── Step 7: allowed values ────────────────────────────────────────────
+        self._check_allowed(series, rule, col)
 
-        # 6 — allowed values check (dichotomous)
-        if rule.allowed is not None:
-            allowed_with_na = [v for v in rule.allowed if v is not None]
-            invalid = series[series.notna() & ~series.isin(allowed_with_na)]
-            for idx, val in invalid.items():
-                self.audit.log(col, idx, val, reason="invalid_allowed_value")
+        # ── Step 8: range ─────────────────────────────────────────────────────
+        self._check_range(series, rule, col)
 
-        # 7 — dedup shadow column (lowercase + no accents key)
-        if rule.dedup_normalize:
-            import unicodedata
-            def _normalize(val):
-                if pd.isna(val):
-                    return val
-                val = val.lower()
-                val = unicodedata.normalize("NFD", val)
-                val = "".join(c for c in val if unicodedata.category(c) != "Mn")
-                return val
-            self.cleaned[f"{col}_key"] = series.apply(_normalize)
+        # ── Step 9: max length ────────────────────────────────────────────────
+        self._check_max_length(series, rule, col)
 
-        self.cleaned[col] = series
+        # ── Step 10: pattern ──────────────────────────────────────────────────
+        self._check_pattern(series, rule, col)
 
-    # -------------------------------------------------------------------------
+        # ── Step 12: write back + rename ──────────────────────────────────────
+        target_col = rule.label if rule.label else col
+        if target_col != col and target_col not in self.cleaned.columns:
+            self.cleaned.rename(columns={col: target_col}, inplace=True)
+        self.cleaned[target_col] = series
+
+        # ── Step 11: dedup shadow column ──────────────────────────────────────
+        self._generate_dedup_key(target_col, rule)
+
+    # =========================================================================
     # Public API
-    # -------------------------------------------------------------------------
+    # =========================================================================
 
     def validate(self) -> "DataValidator":
-        """Run global pre-processing then validate every column in the schema."""
-        self._global_preprocess()
+        """
+        Run the full validation pipeline.
+        Returns self so calls can be chained: .validate().report().save()
+        """
+        print("\n── Validation started ──────────────────────────────────────")
 
-        missing_cols = []
+        # Step 1: global null-string replacement
+        self._global_preprocess()
+        print("  ✓ Global preprocessing complete")
+
+        # Steps 2–12: per-column
+        missing_cols  = []
+        processed     = 0
+
         for col, rule in self.schema.variables.items():
             if col in self.cleaned.columns:
                 self._validate_column(col, rule)
+                processed += 1
             else:
                 missing_cols.append(col)
+                self.audit.log(
+                    col=col, index=None, raw_value=None,
+                    reason=Reason.COLUMN_MISSING,
+                )
+
+        print(f"  ✓ {processed} column(s) validated")
 
         if missing_cols:
-            print(f"\nWARNING: {len(missing_cols)} schema column(s) not found in data:")
+            print(f"\n  ⚠ {len(missing_cols)} schema column(s) not found in data:")
             for c in missing_cols:
-                print(f"  - {c}")
+                print(f"    · {c}")
 
-        return self   # enables chaining: .validate().report().save()
+        print(f"\n  ✓ Done — {len(self.audit)} audit event(s) logged")
+        print("────────────────────────────────────────────────────────────\n")
+        return self
+
+    def report(self) -> "DataValidator":
+        """Print a grouped summary of audit events to stdout."""
+        summary = self.audit.summary()
+        width   = 55
+
+        print(f"\n{'='*width}")
+        print(f"  AUDIT SUMMARY — {len(self.audit)} total event(s)")
+        print(f"{'='*width}")
+
+        if summary.empty:
+            print("  No issues found — data looks clean!")
+        else:
+            print(f"  {'Reason':<38} {'Count':>6}")
+            print(f"  {'-'*38} {'-'*6}")
+            for reason, count in summary.items():
+                print(f"  {reason:<38} {count:>6}")
+
+        print(f"{'='*width}\n")
+        return self
+
+    def report_by_column(self) -> "DataValidator":
+        """Print audit events grouped by column then reason."""
+        df = self.audit.summary_by_column()
+        if df.empty:
+            print("No audit events.")
+            return self
+
+        current_col = None
+        for _, row in df.iterrows():
+            if row["column"] != current_col:
+                current_col = row["column"]
+                print(f"\n  {current_col}")
+            print(f"    {row['reason']:<38} {row['count']:>4}")
+        print()
+        return self
 
     def save(
         self,
-        output_path: str = "/Users/linaruiz/Documents/STEPT1D/data_validation_master/outputs/cleaned_db.csv",
-        audit_path:  str = "/Users/linaruiz/Documents/STEPT1D/data_validation_master/outputs/audit_log.csv",
+        output_path: Optional[str] = None,
+        audit_path:  Optional[str] = None,
     ) -> "DataValidator":
-        """Save cleaned dataset and audit log to CSV."""
+        """Save the cleaned dataset and audit log as CSV files."""
+        output_path = output_path or str(
+            PROJECT_ROOT / "outputs" / "cleaned_db.csv"
+        )
+        audit_path = audit_path or str(
+            PROJECT_ROOT / "outputs" / "audit_log.csv"
+        )
+
+        # create directories if they don't exist
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(audit_path).parent.mkdir(parents=True, exist_ok=True)
 
         self.cleaned.to_csv(output_path, index=False, encoding="utf-8")
         self.audit.save(audit_path)
 
-        print(f"\nSaved cleaned data → {output_path}")
-        print(f"Saved audit log    → {audit_path}")
+        print(f"  Cleaned data saved → {output_path}")
+        print(f"  Cleaned shape:       {self.cleaned.shape}")
         return self
 
-    def report(self) -> "DataValidator":
-        """Print a summary of all issues found during validation."""
-        df_audit = self.audit.to_dataframe()
+    def get_cleaned(self) -> pd.DataFrame:
+        """Return the cleaned DataFrame (copy)."""
+        return self.cleaned.copy()
 
-        print(f"\n{'='*50}")
-        print(f"VALIDATION REPORT")
-        print(f"{'='*50}")
-        print(f"Rows in dataset  : {len(self.cleaned)}")
-        print(f"Total issues     : {len(df_audit)}")
-
-        if not df_audit.empty:
-            print(f"\nIssues by reason:")
-            summary = df_audit.groupby("reason").size().sort_values(ascending=False)
-            for reason, count in summary.items():
-                print(f"  {reason:<30} {count}")
-
-            print(f"\nIssues by column (top 10):")
-            by_col = df_audit.groupby("column").size().sort_values(ascending=False).head(10)
-            for col, count in by_col.items():
-                print(f"  {col:<30} {count}")
-        else:
-            print("No issues found.")
-
-        print(f"{'='*50}\n")
-        return self
+    def get_audit(self) -> pd.DataFrame:
+        """Return the audit log as a DataFrame."""
+        return self.audit.to_dataframe()

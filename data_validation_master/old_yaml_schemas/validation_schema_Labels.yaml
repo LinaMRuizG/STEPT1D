@@ -1,0 +1,1420 @@
+# =============================================================================
+# DATA VALIDATION MASTER SCHEMA for csv-XML values and headers
+# =============================================================================
+# Convention:
+#   dtype         : int | float | string | categorical | dichotomous | date
+#   nullable      : true → NaN allowed | false → NaN flagged as error
+#   invalid_action: flag → log to audit_log.csv and set to NaN
+#   transformations run in order top to bottom
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# GLOBAL: applied to every variable before any variable-level rule
+# -----------------------------------------------------------------------------
+global: #REVISAR QUE SI ESTEN TODOS LOS VALORES NULABLES
+  null_strings:
+    - "nan"
+    - "NaN"
+    - "NAN"
+    - "NULL"
+    - "null"
+    - "None"
+    - "none"
+    - ""
+    - "no se encuentra información en la historia clínica"
+    - "no se encuentra informacion en la historia clinica"
+    - "no se registró en la historia clínica"
+    - "no reportado en la historia clínica"
+    - "sin información"
+    - "sin informacion"
+    - "Sin información"
+    - "no reportado"
+    - "No es posible establecer el área de residencia"
+    - "No se encuentra información en la historia clínica"
+    - "No se registró en la historia clínica"
+    - "No reportado en la historia clínica"
+    - "Sin Dato"
+
+  invalid_action: flag
+ # Revisar qué otros valores se pueden adicionar
+ 
+# -----------------------------------------------------------------------------
+# REUSABLE ANCHORS  (referenced with *month_encoding, *yn_coerce, etc.)
+# -----------------------------------------------------------------------------
+_anchors:
+ 
+  # Translates extracted Spanish month labels directly to normalized English names
+  month_translation_map: &month_translation_map
+    "Enero":       "January"
+    "Febrero":     "February"
+    "Marzo":       "March"
+    "Abril":       "April"
+    "Mayo":        "May"
+    "Junio":       "June"
+    "Julio":       "July"
+    "Agosto":      "August"
+    "Septiembre":  "September"
+    "Octubre":     "October"
+    "Noviembre":   "November"
+    "Diciembre":   "December"
+
+  # Standardized map to normalize localized dichotomous responses into structured tracking strings
+  yn_translate_map: &yn_translate_map
+    "si":  "Yes"
+    "sí":  "Yes"
+    "no":  "No"
+
+  # Transformation workflow explicitly forcing standardization down to standardized labels
+  yn_translate_transforms: &yn_translate_transforms
+    - trim
+    - lowercase
+    - map_values    # Uses the anchor translation lookup systematically
+    - empty_to_null
+ 
+  # shared transformations for variables encoded from long text
+  encode_transforms: &encode_transforms
+    - trim
+    - encode
+ 
+  # shared transformations for year variables extracted from date strings
+  year_transforms: &year_transforms
+    - extract_year      # pd.to_datetime → .dt.year → Int64
+ 
+# =============================================================================
+# VARIABLES
+# =============================================================================
+variables:
+ 
+  Institución: # FUZZY TO CLEAN THE INPUT
+    label: "institution"
+    note: "Open-ended question. Institution where the patient data is being collected"
+    dtype: int
+    nullable: false # "Every patient record MUST have a last name. If it is missing → log it in the audit as an error."
+    fuzzy_match: true
+    threshold: 88
+    canonical: ["Hospital Pablo Tobon Uribe",
+                "Hospital Universitario San Vicente Fundacion",
+                "Clinica Noel",
+                "Hospital General de Medellin",
+                "Hospital Alma Mater de Antioquia",
+                "Hospital Manuel Uribe Angel",
+                "Hospital Marco Fidel Suarez"
+                ] 
+    encoding_map:
+      "Hospital Pablo Tobón Uribe":                    0
+      "Hospital Universitario San Vicente Fundación":  1
+      "Clínica Noel":                                  2
+      "Hospital General de Medellín":                  3
+      "Hospital Alma Máter de Antioquia":              4
+      "Hospital Manuel Uribe Ángel":                   5
+      "Hospital Marco Fidel Suárez":                   6              
+    transformations:
+      - trim
+      - smart_title_case
+      - empty_to_null
+    invalid_action: flag
+    
+
+  Nombre(s) del paciente:
+    label: "first_name"
+    note: "Open-ended question. Names of patients diagnosed with Type 1 Diabetes"
+    dtype: string
+    nullable: false
+    transformations:
+      - sanitize
+      - trim
+      - collapse_spaces
+      - smart_title_case
+      - empty_to_null
+    max_length: 120
+    pattern: "^[\\p{L}\\s]+$"
+    invalid_action: flag
+
+
+  Apellido(s) del paciente:
+    label: "last_name"
+    note: "Open-ended question. Names of patients diagnosed with Type 1 Diabetes"
+    dtype: string
+    nullable: false
+    transformations:
+      - sanitize
+      - trim
+      - collapse_spaces
+      - smart_title_case
+      - empty_to_null
+    max_length: 120
+    pattern: "^[\\p{L}\\s]+$"
+    invalid_action: flag
+
+  Tipo de documento de identidad:
+    label: "identity_document"
+    note: "Single-choice question. Type of identity document the patient used during their last clinical encounter."
+    dtype: string
+    nullable: true
+    encoding_map:
+      "Registro civil":                      "Birth Certificate"
+      "Tarjeta de identidad":                "Identity Card"
+      "Cédula de ciudadanía":                "Citizenship ID"
+      "Cédula de extranjería":               "Foreigner ID"
+      "Otro documento de identidad":         "Other Identification"
+    transformations: *encode_transforms
+    invalid_action: flag
+    
+  Otro tipo de documento de identidad:
+    label: "another_id"
+    note: "Open-ended question. Other type of identity document"
+    dtype: string
+    nullable: true
+    dtype: categorical
+    #fuzzy_match: true # the canonical values will be defined at the end
+    #threshold: 88
+    #canonical: []
+    transformations:
+      - trim
+      - smart_title_case
+    invalid_action: flag
+
+  Número documento de identidad:
+    label: "id_number"
+    note: "Open-ended question. Patient identity document number"
+    dtype: string
+    nullable: false
+    transformations:
+      - trim
+      - uppercase
+    pattern: "^[A-Z0-9\\-]+$"
+    special_null_values: [99]
+    invalid_action: flag
+
+  Sexo biológico:
+    label: "sex"
+    note: "Single-choice question. Patient's biological sex as reported in the medical record""
+    dtype: string
+    nullable: true
+    encoding_map:
+      "Masculino": "Male"
+      "Femenino":  "Female"
+    transformations:
+      - trim
+      - map_values
+      - empty_to_null
+    allowed: ["Male", "Female"]
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # BIRTH & DEMOGRAPHICS
+  # ---------------------------------------------------------------------------
+
+  País de nacimiento: 
+    label: "country_birth"
+    note: "Open-ended question. Patient's country of birth. It could be any country ~ 191"
+    dtype: categorical
+    nullable: true
+    fuzzy_match: true 
+    threshold: 88
+    canonical: ["Afganistán", "Albania", "Argelia", "Andorra", "Angola", "Antigua y Barbuda", "Argentina", "Armenia", "Australia", "Austria", "Azerbaiyán", "Bahamas", "Baréin", "Bangladés", "Barbados", "Bielorrusia", "Bélgica", "Belice", "Benín", "Bután", "Bolivia", "Bosnia y Herzegovina", "Botsuana", "Brasil", "Brunéi", "Bulgaria", "Burkina Faso", "Burundi", "Cabo Verde", "Camboya", "Camerún", "Canadá", "República Centroafricana", "Chad", "Chile", "China", "Colombia", "Comoras", "Congo (República del)", "Congo (República Democrática del)", "Costa Rica", "Croacia", "Cuba", "Chipre", "República Checa", "Dinamarca", "Yibuti", "Dominica", "República Dominicana", "Ecuador", "Egipto", "El Salvador", "Guinea Ecuatorial", "Eritrea", "Estonia", "Suazilandia", "Etiopía", "Fiyi", "Finlandia", "Francia", "Gabón", "Gambia", "Georgia", "Alemania", "Ghana", "Grecia", "Granada", "Guatemala", "Guinea", "Guinea-Bisáu", "Guyana", "Haití", "Honduras", "Hungría", "Islandia", "India", "Indonesia", "Irán", "Irak", "Irlanda", "Israel", "Italia", "Jamaica", "Japón", "Jordania", "Kazajistán", "Kenia", "Kiribati", "Corea del Norte", "Corea del Sur", "Kosovo", "Kuwait", "Kirguistán", "Laos", "Letonia", "Líbano", "Lesoto", "Liberia", "Libia", "Liechtenstein", "Lituania", "Luxemburgo", "Madagascar", "Malaui", "Malasia", "Maldivas", "Malí", "Malta", "Islas Marshall", "Mauritania", "Mauricio", "México", "Micronesia", "Moldavia", "Mónaco", "Mongolia", "Montenegro", "Marruecos", "Mozambique", "Myanmar", "Namibia", "Nauru", "Nepal", "Países Bajos", "Nueva Zelanda", "Nicaragua", "Níger", "Nigeria", "Macedonia del Norte", "Noruega", "Omán", "Pakistán", "Palaos", "Palestina", "Panamá", "Papúa Nueva Guinea", "Paraguay", "Perú", "Filipinas", "Polonia", "Portugal", "Catar", "Rumanía", "Rusia", "Ruanda", "San Cristóbal y Nieves", "Santa Lucía", "San Vicente y las Granadinas", "Samoa", "San Marino", "Santo Tomé y Príncipe", "Arabia Saudita", "Senegal", "Serbia", "Seychelles", "Sierra Leona", "Singapur", "Eslovaquia", "Eslovenia", "Islas Salomón", "Somalia", "Sudáfrica", "Sudán del Sur", "España", "Sri Lanka", "Sudán", "Surinam", "Suecia", "Suiza", "Siria", "Taiwán", "Tayikistán", "Tanzania", "Tailandia", "Timor Oriental", "Togo", "Tonga", "Trinidad y Tobago", "Túnez", "Turquía", "Turkmenistán", "Tuvalu", "Uganda", "Ucrania", "Emiratos Árabes Unidos", "Reino Unido", "Estados Unidos", "Uruguay", "Uzbekistán", "Vanuatu", "Ciudad del Vaticano", "Venezuela", "Vietnam", "Yemen", "Zambia", "Zimbabue"]
+    transformations:
+      - trim
+      - smart_title_case
+    invalid_action: flag
+
+
+  Departamento de Nacimiento: 
+    label: "birth_department"
+    note : "Open-ended question. Department of birth (Colombia). It appears is the country_birth is Colombia. Here is valid any Colombia´s deparment ~32."
+    dtype: categorical
+    nullable: true
+    fuzzy_match: true
+    threshold: 88
+    canonical: ["Amazonas", "Antioquia", "Arauca", "Atlantico", "Bolivar", "Boyaca", "Caldas", "Caqueta", "Casanare", "Cauca", "Cesar", "Choco", "Cordoba", "Cundinamarca", "Guainia", "Guaviare", "Huila", "La Guajira", "Magdalena", "Meta", "Nariño", "Norte de Santander", "Putumayo", "Quindio", "Risaralda", "San Andres y Providencia", "Santander", "Sucre", "Tolima", "Valle del Cauca", "Vaupes", "Vichada"]
+    transformations:
+      - trim
+      - smart_title_case
+    invalid_action: flag
+
+  Municipio de nacimiento:
+    label: "municipality_birth"
+    note : "Open-ended question. Department of birth (Colombia). It appears is the country_birth is Colombia. Which means here is valid any Colombia´s municipalities ~1123. THE IDEA WITH THIS IS TO GET ALL THE POSSIBLE UNIQUE RAW VALUES AND MAP TO A DEFAULT LIST OF VALUES"
+    dtype: categorical
+    nullable: true
+    fuzzy_match: true
+    threshold: 88
+    canonical: ["Abejorral", "Abriaquí", "Acacias", "Acandi", "Acevedo", "Achi", "Agrado", "Agua de Dios", "Aguachica", "Aguada", "Aguazul", "Agustin Codazzi", "Alabajar", "Albania","Alban", "Alban", "Alcala", "Aldana", "Alejandria", "Algarrobo", "Algeciras", "Almaguer", "Almeida", "Alpujarra", "Altamira", "Alto Baudo", "Altos del Rosario", "Alvarado", "Amaga", "Amalfi", "Amalfitano", "Ambalema", "Anapoima", "Ancuya", "Andalucia", "Andes", "Angelopolis", "Angostura", "Anori", "Anserma", "Anserma Nuevo", "Ansermanuevo", "Anza", "Anzoategui", "Apartado", "Apia", "Apulo", "Aquitania", "Aracataca", "Aranzazu", "Aratoca", "Arauca", "Arauquita", "Arbelaez", "Arboleda", "Arboledas", "Arboletes", "Arcabuco", "Armenia", "Armero", "Arroyohondo", "Astrea", "Ataco", "Atrato", "Ayapel", "Bagado", "Bahia Solano", "Bajo Baudo", "Balboa", "Balboa", "Baranoa", "Baraya", "Barbacoas","Barbosa", "Barichara", "Barrancabermeja", "Barrancas", "Barranco de Loba", "Barranquilla", "Becerril", "Belalcazar", "Belen", "Belen", "Belen de Bajira", "Belen de los Andaquies", "Belen de Umbria", "Bello", "Belmira", "Beltran", "Berbeo", "Betania", "Beitiva", "Bituima", "Boavita", "Bogota D.C.", "Bojaca", "Bojaya", "Bolivar", "Bolivar", "Bolivar", "Bosconia", "Boyaca", "Briceno", "Briceno", "Bucaramanga", "Bucarasica", "Buenaventura", "Buenavista", "Buenos Aires", "Buga", "Bugalagrande", "Buritica", "Busbanza", "Cabrera", "Cabrera", "Caceres", "Cachipay", "Cachira", "Cacota", "Caicedo", "Caicedonia", "Caimito", "Cajamarca", "Cajibio", "Cajica", "Calamar", "Calamar", "Calarca", "Caldas", "Caldas", "Cali", "Calima", "Caloto", "Campamento", "Campo de la Cruz", "Campoalegre", "Campohermoso", "Canalete", "Cantagallo", "Caparrapi", "Capitanejo", "Caqueza", "Carepa", "Carmen de Apicala", "Carmen de Carupa", "Carmen de Viboral", "Carolina", "Cartagena", "Cartagena del Chaira", "Cartago", "Caruru", "Casabianca", "Castilla la Nueva", "Caucasia", "Cepita", "Cerete", "Cerinza", "Cerro San Antonio", "Certegui", "Chaparral", "Chigorodo", "Chiquiza", "Chima", "Chima", "Chima", "Chimichagua", "Chinacota", "Chinavita", "Chinchina", "Chinu", "Chipaque", "Chipata", "Chiquinquira", "Chiquiza", "Chiscas", "Chita", "Chitaga", "Chitaraque", "Chivata", "Choachi", "Choconta", "Cicuco", "Cienaga", "Cienaga de Oro", "Cienega", "Cimitarra", "Circasia", "Cisneros", "Ciudad Bolivar", "Clemencia", "Cocorna", "Coello", "Cogua", "Colombia", "Colon", "Colon", "Coloso", "Combita", "Concepcion", "Concepcion", "Concordia", "Concordia", "Condoto", "Confines", "Consaca", "Contadero", "Contratacion", "Convencion", "Copacabana", "Coper", "Cordoba", "Corinto", "Coromoro", "Corozal", "Corrales", "Cota", "Cotorra", "Covarachia", "Covenas", "Cucaita", "Cucunuba", "Cucuta", "Cuitiva", "Cumbal", "Cumbitara", "Cunday", "Curillo", "Curiti", "Curumani", "Dabeiba", "Dagua", "Dibulla", "Distraccion", "Dolores", "Don Matias", "Dosquebradas", "Duitama", "Durania", "El Aguila", "El Bagre", "El Banco", "El Cairo", "El Calvario", "El Carmen", "El Carmen de Atrato", "El Carmen de Bolivar", "El Carmen de Chucuri", "El Carmen de Viboral", "El Castillo", "El Charco", "El Cocuy", "El Colegio", "El Copey", "El Doncello", "El Dovio", "El Espino", "El Guacamayo", "El Guamo", "El Litoral del San Juan", "El Molino", "El Paso", "El Paujil", "El Penon", "El Penon", "El Penon", "El Pinon", "El Playon", "El Reten", "El Retorno", "El Roble", "El Rosal", "El Rosario", "El Santuario", "El Tablon de Gomez", "El Tambo", "El Tambo", "El Tarra", "El Zulia", "Elias", "Entrerrios", "Envigado", "Espinal", "Falan", "Filadelfia", "Filandia", "Firavitoba", "Flandes", "Florencia", "Florencia", "Floresta", "Florida", "Floridablanca", "Fomeque", "Fonseca", "Fontibon", "Fosca", "Francisco Pizarro", "Fredonia", "Fresno", "Frontino", "Fuente de Oro", "Fundacion", "Funes", "Funza", "Fuquene", "Fusagasuga", "Gachala", "Gachancipa", "Gacheta", "Gachonta", "Galan", "Galapa", "Galeras", "Gama", "Gamarra", "Gambita", "Gameza", "Garagoa", "Garzon", "Genova", "Giraldo", "Girardot", "Girardota", "Giron", "Gomez Plata", "Gonzalez", "Gramalote", "Granada", "Granada", "Granada", "Guaca", "Guacamayas", "Guacari", "Guachene", "Guacheta", "Guachucal", "Guadalupe", "Guadalupe", "Guadalupe", "Guamal", "Guamal", "Guamo", "Guapi", "Guapota", "Guaranda", "Guarne", "Guasca", "Guatape", "Guataqui", "Guatavita", "Guateque", "Guavata", "Guayabal de Siquima", "Guayabetal", "Guayata", "Guepsa", "Guican", "Hacari", "Hatillo de Loba", "Hato", "Hato Corozal", "Hatonuevo", "Heliconia", "Heran", "Herveo", "Hispania", "Hobo", "Honda", "Ibague", "Icononzo", "Iles", "Imues", "Inirida", "Inza", "Ipiales", "Iquira", "Isnos", "Istmina", "Ituango", "Iza", "Jerico", "Jerico", "Jenesano", "Jesus Maria", "Jordan", "Juan de Acosta", "Junin", "Jurado", "La Argentina", "La Belleza", "La Calera", "La Capilla", "La Ceja", "La Chorrera", "La Cruz", "La Cumbre", "La Dorada", "La Esperanza", "La Estrella", "La Florida", "La Gloria", "La Jagua de Ibirico", "La Jagua del Pilar", "La Llanada", "La Macarena", "La Merced", "La Mesa", "La Montanita", "La Palma", "La Paz", "La Paz", "La Pedrera", "La Pena", "La Pintada", "La Plata", "La Playa", "La Primavera", "La Salina", "La Sierra", "La Tola", "La Union", "La Union", "La Union", "La Union", "La Uvita", "La Vega", "La Vega", "La Victoria", "La Victoria", "La Virginia", "Labateca", "Landazuri", "Lebrija", "Leguizamo", "Lenguazaque", "Leon", "Leticia", "Libano", "Liborina", "Linares", "Lloro", "Lopez de Micay", "Lorica", "Los Andes", "Los Cordobas", "Los Palmitos", "Los Patios", "Los Santos", "Lourdes", "Luruaco", "Macanal", "Macaravita", "Magangu", "Magui Payan", "Mahates", "Maicao", "Majagual", "Malaga", "Malambo", "Mallama", "Manati", "Manaure", "Manaure Balcon del Cesar", "Manizales", "Manta", "Manzanares", "Mapiripán", "Mapiripana", "Margarita", "Maria La Baja", "Marinilla", "Maripi", "Mariquita", "Marmato", "Marquetalia", "Marsella", "Marulanda", "Medellin", "Medina", "Medio Atrato", "Medio Baudo", "Medio San Juan", "Melgar", "Mercaderes", "Mesetas", "Milan", "Miraflores", "Miraflores", "Miranda", "Miriti-Parana", "Molagavita", "Momil", "Mompox", "Mongua", "Mongui", "Moniquira", "Montebello", "Montecristo", "Montelibano", "Montenegro", "Monteria", "Monterrey", "Morales", "Morales", "Morelia", "Morroa", "Mosquera", "Mosquera", "Motavita", "Murillo", "Murindo", "Mutata", "Mutiscua", "Muzo", "Narino", "Narino", "Narino", "Nataga", "Natagaima", "Nechi", "Neira", "Neiva", "Nemocon", "Nilo", "Nimaima", "Novita", "Nunchia", "Noqui", "Ocamonte", "Ocana", "Oiba", "Oicata", "Olaya", "Olaya Herrera", "Onzaga", "Oporapa", "Orito", "Ortega", "Ospina", "Otanche", "Ovejas", "Pacho", "Pachavita", "Paez", "Paez", "Paicol", "Pailitas", "Paipa", "Pajarito", "Palmar", "Palmar de Varela", "Palmas del Socorro", "Palmira", "Palmito", "Pamplona", "Pamplonita", "Pandi", "Panqueba", "Paramo", "Paratebueno", "Pasca", "Pasto", "Patia", "Payande", "Paz de Ariporo", "Paz de Rio", "Pedraza", "Pelaya", "Pensilvania", "Peque", "Pereira", "Penol", "Pesca", "Piamonte", "Piedecuesta", "Piedras", "Piendamo", "Pijao", "Pijino del Carmen", "Pinchote", "Pinillos", "Pisba", "Pitalito", "Pivijay", "Planadas", "Planeta Rica", "Plato", "Policarpa", "Polonuevo", "Ponedera", "Popayan", "Pore", "Potosi", "Pradera", "Prado", "Providencia", "Pueblo Bello", "Pueblo Nuevo", "Pueblo Rico", "Puebloviejo", "Puente Nacional", "Puerres", "Puerto Alegria", "Puerto Arica", "Puerto Asis", "Puerto Berrio", "Puerto Boyaca", "Puerto Caicedo", "Puerto Carreno", "Puerto Colombia", "Puerto Concordia", "Puerto Escondido", "Puerto Gaitan", "Puerto Guzman", "Puerto Leguizamo", "Puerto Libertador", "Puerto Lleras", "Puerto Lopez", "Puerto Nare", "Puerto Narino", "Puerto Parra", "Puerto Rondon", "Puerto Salgar", "Puerto Santander", "Puerto Tejada", "Puerto Triunfo", "Puerto Wilches", "Pupiales", "Purace", "Purificacion", "Purisima", "Quebradanegra", "Quibdo", "Quimbaya", "Quinchia", "Quipama", "Quipile", "Ragonvalia", "Ramiriqui", "Raquira", "Recetor", "Remedios", "Remolino", "Repelon", "Restrepo", "Restrepo", "Ricaurte", "Ricaurte", "Riofrio", "Riohacha", "Rionegro", "Rionegro", "Riosucio", "Riosucio", "Risaralda", "Rivera", "Roberto Payan", "Roldanillo", "Roncesvalles", "Rondon", "Ropon", "Rovira", "Sabana de Torres", "Sabanagrande", "Sabanalarga", "Sabanalarga", "Sabanalarga", "Sabaneta", "Sahagun", "Saladoblanco", "Salamina", "Salamina", "Salazar", "Salento", "Salgar", "Samaca", "Samana", "Samaniego", "San Agustin", "San Alberto", "San Andres", "San Andres de Cuerquia", "San Andres de Sotavento", "San Antero", "San Antonio", "San Antonio del Tequendama", "San Bernardo", "San Bernardo", "San Bernardo del Viento", "San Calixto", "San Carlos", "San Carlos", "San Carlos de Guaroa", "San Cayetano", "San Cayetano", "San Diego", "San Eduardo", "San Estanislao", "San Felipe", "San Fernando", "San Francisco", "San Francisco", "San Francisco", "San Gil", "San Jacinto", "San Jacinto del Cauca", "San Jose", "San Jose de la Montaña", "San Jose de Miranda", "San Jose de Pare", "San Jose de Ure", "San Jose del Fragua", "San Jose del Guaviare", "San Jose del Palmar", "San Juan de Arama", "San Juan de Betulia", "San Juan de Rioseco", "San Juan de Uraba", "San Juan del Cesar", "San Juan Nepomuceno", "San Juanito", "San Lorenzo", "San Luis", "San Luis", "San Luis de Cubarral", "San Luis de Gaceno", "San Luis de Palenque", "San Marcos", "San Martin", "San Martin", "San Martin de Loba", "San Mateo", "San Miguel", "San Miguel", "San Miguel de Sema", "San Onofre", "San Pablo", "San Pablo", "San Pablo de Borbur", "San Pedro", "San Pedro", "San Pedro de Cartago", "San Pedro de Uraba", "San Pelayo", "San Rafael", "San Roque", "San Sebastian", "San Sebastian de Buenavista", "San Vicente", "San Vicente de Chucuri", "San Vicente del Caguan", "San Zenon", "Santa Ana", "Santa Barbara", "Santa Barbara", "Santa Barbara", "Santa Barbara de Pinto", "Santa Catalina", "Santa Helena del Opon", "Santa Isabel", "Santa Lucia", "Santa Marta", "Santa Rosa", "Santa Rosa", "Santa Rosa de Cabal", "Santa Rosa de Osos", "Santa Rosa de Viterbo", "Santa Rosa del Sur", "Santa Rosalia", "Santa Sofia", "Santacruz", "Santafe de Antioquia", "Santander de Quilichao", "Santiago", "Santiago", "Santo Domingo", "Santo Tomas", "Santuario", "Santuario", "Sapuyes", "Sardinata", "Sasaima", "Sativasur", "Sativanorte", "Segovia", "Serrania de La Macarena", "Siachoque", "Sibate", "Sibundoy", "Silos", "Silvania", "Silvia", "Simacota", "Simijaca", "Simiti", "Since", "Sincelejo", "Sipi", "Sitionuevo", "Soacha", "Soata", "Socha", "Socorro", "Sogamoso", "Solano", "Soledad", "Solita", "Somondoco", "Sonson", "Sopetran", "Soplaviento", "Sopo", "Sora", "Soraca", "Sorata", "Sotaquira", "Sotara", "Suaita", "Suaza", "Suesca", "Supata", "Supia", "Surata", "Sutamarchan", "Sutatausa", "Sutatenza", "Tabio", "Tado", "Talaigua Nuevo", "Tamalameque", "Tamara", "Tame", "Tamesis", "Taminango", "Tangua", "Taraira", "Taraza", "Tarqui", "Tarso", "Tasco", "Tauramena", "Tausa", "Tello", "Teorama", "Teruel", "Tibacuy", "Tibana", "Tibasosa", "Tibirita", "Tibu", "Tierralta", "Timana", "Timbio", "Timbiqui", "Tinjaca", "Tipacoque", "Tiquisio", "Titiribí", "Toca", "Togui", "Toledo", "Toledo", "Tolu", "Toluviejo", "Tona", "Topaga", "Topaipi", "Toribio", "Toro", "Totoro", "Trinidad", "Trujillo", "Tubara", "Tuchin", "Tuquerres", "Turbaco", "Turbana", "Turbo", "Tunja", "Turmeque", "Tuta", "Tutaza", "Ubala", "Ubaque", "Ubate", "Ulloa", "Une", "Uninan", "Untama", "Uramita", "Uribe", "Uribia", "Urrao", "Urumita", "Usiacuri", "Valdivia", "Valencia", "Valle de San Jose", "Valle de San Juan", "Valle del Guamuez", "Valledupar", "Valparaiso", "Valparaiso", "Vegachi", "Velez", "Venadillo", "Venecia", "Venecia", "Vergara", "Versalles", "Vetas", "Viani", "Victoria", "Vigia del Fuerte", "Vijesi", "Villa del Rosario", "Villa de Leyva", "Villa Rica", "Villagarzon", "Villamaria", "Villanueva", "Villanueva", "Villanueva", "Villapinzon", "Villarrica", "Villavicencio", "Villavieja", "Villeta", "Viota", "Viraracha", "Vista Hermosa", "Viterbo","Yarumal", "Yacopi", "Yaguara", "Yali", "Yanacona", "Yolombo", "Yondo", "Yopal", "Yotoco", "Yumbo", "Zapatoca", "Zapayan", "Zaragoza", "Zarzal", "Zetaquira", "Zipapon", "Zipaquira", "Zona Bananera"]
+    transformations:
+      - trim
+      - smart_title_case
+    invalid_action: flag
+
+  Año de nacimiento:
+    label: "birthdate_year"
+    note: "Single-choice question. Patient's year of birth as recorded in the medical record, or an inference."
+    dtype: int
+    nullable: false
+    raw_dtype: date_string      # input format: "YYYY-MM-DD"
+    transformations: *year_transforms
+    min: 1900
+    max: 2025
+    special_null_values: [1800]
+    invalid_action: flag
+
+  Mes de nacimiento: # con el nombre normal
+    label: "birthdate_month"
+    note: "Single-choice question. Patient's month of birth as recorded in the medical record"
+    dtype: string
+    nullable: true
+    encoding_map: *month_encoding
+    transformations:
+      - trim
+      - map_values
+      - empty_to_null
+    allowed:
+      - "January"
+      - "February"
+      - "March"
+      - "April"
+      - "May"
+      - "June"
+      - "July"
+      - "August"
+      - "September"
+      - "October"
+      - "November"
+      - "December"
+    invalid_action: flag
+
+  age:
+    label: "Edad actual del paciente en años cumplidos"
+    note: "This is an automatically estimated variable ?"
+    dtype: int
+    nullable: false
+    min: 0
+    max: 120
+    transformations:      # add — consistent with all other int variables
+      - to_int
+    invalid_action: flag  # add
+
+  # ---------------------------------------------------------------------------
+  # RESIDENCE
+  # ---------------------------------------------------------------------------
+
+  País de residencia:
+    label: "country_residence"
+    note: "Open-ended question. Patient's country of residence. It could be any country ~ 191"
+    dtype: categorical
+    nullable: false
+    fuzzy_match: true 
+    threshold: 88
+    canonical: ["Afganistán", "Albania", "Argelia", "Andorra", "Angola", "Antigua y Barbuda", "Argentina", "Armenia", "Australia", "Austria", "Azerbaiyán", "Bahamas", "Baréin", "Bangladés", "Barbados", "Bielorrusia", "Bélgica", "Belice", "Benín", "Bután", "Bolivia", "Bosnia y Herzegovina", "Botsuana", "Brasil", "Brunéi", "Bulgaria", "Burkina Faso", "Burundi", "Cabo Verde", "Camboya", "Camerún", "Canadá", "República Centroafricana", "Chad", "Chile", "China", "Colombia", "Comoras", "Congo (República del)", "Congo (República Democrática del)", "Costa Rica", "Croacia", "Cuba", "Chipre", "República Checa", "Dinamarca", "Yibuti", "Dominica", "República Dominicana", "Ecuador", "Egipto", "El Salvador", "Guinea Ecuatorial", "Eritrea", "Estonia", "Suazilandia", "Etiopía", "Fiyi", "Finlandia", "Francia", "Gabón", "Gambia", "Georgia", "Alemania", "Ghana", "Grecia", "Granada", "Guatemala", "Guinea", "Guinea-Bisáu", "Guyana", "Haití", "Honduras", "Hungría", "Islandia", "India", "Indonesia", "Irán", "Irak", "Irlanda", "Israel", "Italia", "Jamaica", "Japón", "Jordania", "Kazajistán", "Kenia", "Kiribati", "Corea del Norte", "Corea del Sur", "Kosovo", "Kuwait", "Kirguistán", "Laos", "Letonia", "Líbano", "Lesoto", "Liberia", "Libia", "Liechtenstein", "Lituania", "Luxemburgo", "Madagascar", "Malaui", "Malasia", "Maldivas", "Malí", "Malta", "Islas Marshall", "Mauritania", "Mauricio", "México", "Micronesia", "Moldavia", "Mónaco", "Mongolia", "Montenegro", "Marruecos", "Mozambique", "Myanmar", "Namibia", "Nauru", "Nepal", "Países Bajos", "Nueva Zelanda", "Nicaragua", "Níger", "Nigeria", "Macedonia del Norte", "Noruega", "Omán", "Pakistán", "Palaos", "Palestina", "Panamá", "Papúa Nueva Guinea", "Paraguay", "Perú", "Filipinas", "Polonia", "Portugal", "Catar", "Rumanía", "Rusia", "Ruanda", "San Cristóbal y Nieves", "Santa Lucía", "San Vicente y las Granadinas", "Samoa", "San Marino", "Santo Tomé y Príncipe", "Arabia Saudita", "Senegal", "Serbia", "Seychelles", "Sierra Leona", "Singapur", "Eslovaquia", "Eslovenia", "Islas Salomón", "Somalia", "Sudáfrica", "Sudán del Sur", "España", "Sri Lanka", "Sudán", "Surinam", "Suecia", "Suiza", "Siria", "Taiwán", "Tayikistán", "Tanzania", "Tailandia", "Timor Oriental", "Togo", "Tonga", "Trinidad y Tobago", "Túnez", "Turquía", "Turkmenistán", "Tuvalu", "Uganda", "Ucrania", "Emiratos Árabes Unidos", "Reino Unido", "Estados Unidos", "Uruguay", "Uzbekistán", "Vanuatu", "Ciudad del Vaticano", "Venezuela", "Vietnam", "Yemen", "Zambia", "Zimbabue"]
+    transformations:
+      - trim
+      - smart_title_case
+    invalid_action: flag
+
+
+  Departamento de residencia: 
+    label: "department_residence"
+    note : "Open-ended question. Department of residence (Colombia). It appears is the country_residence is Colombia. Here is valid any Colombia´s deparment ~32."
+    dtype: categorical
+    nullable: true
+    fuzzy_match: true
+    threshold: 88
+    canonical: ["Amazonas", "Antioquia", "Arauca", "Atlantico", "Bolivar", "Boyaca", "Caldas", "Caqueta", "Casanare", "Cauca", "Cesar", "Choco", "Cordoba", "Cundinamarca", "Guainia", "Guaviare", "Huila", "La Guajira", "Magdalena", "Meta", "Nariño", "Norte de Santander", "Putumayo", "Quindio", "Risaralda", "San Andres y Providencia", "Santander", "Sucre", "Tolima", "Valle del Cauca", "Vaupes", "Vichada"]
+    transformations:
+      - trim
+      - smart_title_case
+    invalid_action: flag
+
+
+  Municipio o corregimiento de residencia en el Valle de Aburrá:
+    label: "municipality_residence"
+    note: "Single-choice question. It appears if the department_residence is Antioquia."
+    dtype: string
+    nullable: true
+    allowed:
+      - "Medellín"
+      - "Itagüí"
+      - "Envigado"
+      - "Sabaneta"
+      - "Caldas"
+      - "La Estrella"
+      - "Bello"
+      - "Barbosa"
+      - "Copacabana"
+      - "Girardota"
+      - "Corregimiento de Altavista"
+      - "Corregimiento de Palmitas"
+      - "Corregimiento de San Antonio de Prado"
+      - "Corregimiento de San Cristóbal"
+      - "Corregimiento de Santa Elena"
+      - "Valle de Aburrá sin especificar"
+      - "Residencia fuera del Valle de Aburrá"
+    transformations:
+      - trim
+      - empty_to_null
+    invalid_action: flag
+
+  Residencia fuera del Valle de Aburrá: 
+    label: "another_municipality_res"
+    note: "Open-ended question. It appears if the municipality_residence is 16"
+    nullable: true # if nan Null
+    dtype: categorical
+    #fuzzy_match: true # the canonical values will be defined at the end
+    #threshold: 88
+    #canonical: [] 
+    transformations:
+      - trim
+      - smart_title_case
+    invalid_action: flag
+
+  Dirección de residencia: # how to clean this and how is this use?
+    label: "address_res"
+    note: "Open-ended question. Patient's current residential address"
+    dtype: string
+    nullable: true
+    transformations:
+      - sanitize
+      - trim
+      - lowercase
+      - empty_to_null     
+    invalid_action: flag 
+
+  Nombre barrio o vereda de residencia:  # how to clean this and how is this use?
+    label: "neighborhood_residence"
+    note: "Open-ended question. It appears if the municipality_residence is some of the displayed municipalities. Which means any neighborhood or "vereda" of these municipalities."
+    nullable: true
+    dtype: categorical
+    #fuzzy_match: true # the canonical values will be defined at the end
+    #threshold: 88
+    #canonical: []
+    transformations:
+      - trim
+      - smart_title_case
+    invalid_action: flag
+
+  Comuna de residencia:
+    label: "commune_residence"
+    note: "Single-choice question.  It appears if the municipality_residence is Medellín"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Popular"
+      - "Santa Cruz"
+      - "Manrique"
+      - "Aranjuez"
+      - "Castilla"
+      - "Doce de Octubre"
+      - "Robledo"
+      - "Villa Hermosa"
+      - "Buenos Aires"
+      - "La Candelaria"
+      - "Laureles-Estadio"
+      - "La América"
+      - "San Javier"
+      - "El Poblado"
+      - "Guayabal"
+      - "Belén"
+    transformations:
+      - trim
+      - extract_comuna_name      # "Septiembre (09)" → "Septiembre"
+      - empty_to_null
+    invalid_action: flag
+    
+    
+  Área de residencia:
+    label: "area_residence"
+    note: "Single-choice question"
+    dtype: string
+    nullable: true
+    encoding_map:
+      "Urbano": "Urban"
+      "Rural":  "Rural"
+    transformations:
+      - trim
+      - map_values
+      - empty_to_null
+    allowed: ["Urban", "Rural"]
+    invalid_action: flag
+
+  Tipo de cobertura en la atención:
+    label: "healthcare_system"
+    note: "Single-choice question. Patient's current health system affiliation type as recorded in the medical record"
+    dtype: string
+    nullable: true
+    encoding_map:
+      "Contributivo": "Contributory Scheme"
+      "Subsidiado":   "Subsidized Scheme"
+      "Especial (Fuerzas Militares, Policía Nacional, Magisterio, Ecopetrol)": "Special Scheme (Military, Police, Teachers, Ecopetrol)"
+      "No tiene afiliación al sistema de salud": "Uninsured / No Affiliation"
+      "Póliza de seguro": "Private Insurance Policy"
+      "Particular": "Out-of-Pocket / Private Patient"
+    transformations:
+      - trim
+      - map_values
+      - empty_to_null
+    allowed:
+      - "Contributory Scheme"
+      - "Subsidized Scheme"
+      - "Special Scheme (Military, Police, Teachers, Ecopetrol)"
+      - "Uninsured / No Affiliation"
+      - "Private Insurance Policy"
+      - "Out-of-Pocket / Private Patient"
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # DIAGNOSIS
+  # ---------------------------------------------------------------------------
+  
+
+  Códigos diagnósticos reportados/E100 diabetes mellitus insulinodependiente con coma:
+    label: "diagnostic_codes/0"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int 
+    invalid_action: flag
+
+  Códigos diagnósticos reportados/E101 diabetes mellitus insulinodependiente con cetoacidosis:
+    label: "diagnostic_codes/1"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int                  
+    invalid_action: flag
+  
+  Códigos diagnósticos reportados/E102 diabetes mellitus insulinodependiente con complicaciones renales:
+    label: "diagnostic_codes/2"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int                  
+    invalid_action: flag
+  
+  Códigos diagnósticos reportados/E103 diabetes mellitus insulinodependiente con complicaciones oftálmicas:
+    label: "diagnostic_codes/3"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int                  
+    invalid_action: flag
+
+  Códigos diagnósticos reportados/E104 diabetes mellitus insulinodependiente con complicaciones neurológicas:
+    label: "diagnostic_codes/4"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int                 
+    invalid_action: flag
+
+  Códigos diagnósticos reportados/E105 diabetes mellitus insulinodependiente con complicaciones circulatorias periféricas:
+    label: "diagnostic_codes/5"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int                  
+    invalid_action: flag
+
+  Códigos diagnósticos reportados/E106 diabetes mellitus insulinodependiente con otras complicaciones especificadas:
+    label: "diagnostic_codes/6"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int                  
+    invalid_action: flag
+
+  Códigos diagnósticos reportados/E107 diabetes mellitus insulinodependiente con complicaciones múltiples:
+    label: "diagnostic_codes/7"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int                  
+    invalid_action: flag
+
+  Códigos diagnósticos reportados/E108 diabetes mellitus insulinodependiente con complicaciones no especificadas:
+    label: "diagnostic_codes/8"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int                 
+    invalid_action: flag
+
+  Códigos diagnósticos reportados/E109 diabetes mellitus insulinodependiente sin mención de complicación:
+    label: "diagnostic_codes/9"
+    dtype: dichotomous
+    nullable: false
+    allowed: [0, 1]
+    transformations:
+      - to_int                  
+    invalid_action: flag
+ 
+
+  Estrategia de confirmación del caso de diabetes tipo 1:
+    label: "diagnostic_confirmation"
+    note: "Single-choice question"
+    dtype: string
+    nullable: true
+    encoding_map:
+      "Diganóstico realizado por el médico tratante según criterio clínico": "Clinical Criteria"
+      "Aplicación de criterios ADA 2026 por especialista del proyecto": "ADA Criteria"
+      "Ambas estrategias" : "Clinical and ADA Criteria"
+    transformations:
+      - trim
+      - map_values
+      - empty_to_null
+    allowed:
+      - "Clinical Criteria"
+      - "ADA Criteria"
+    invalid_action: flag
+
+
+  Diagnóstico intrahospitalario:
+    label: "hospital_diagnosis"
+    note: >
+      Was the diagnosis of Type 1 Diabetes Mellitus made at the
+      healthcare institution where the patient information is being
+      collected? Not present in source Excel, derived variable.
+    dtype: string
+    nullable: true
+    encoding_map: *yn_translate_map
+    transformations:
+      - trim
+      - lowercase       # Lowercase first to easily match the encoding map keys
+      - map_values      # Converts "si", "sí", or "yes" to "Si", and "no" to "No"
+      - empty_to_null
+    allowed:
+      - "Si"
+      - "No"
+    invalid_action: flag
+    
+  Residencia en el Valle de Aburrá durante el diagnóstico:
+    label: "diagnostic_residency"
+    note: >
+      Single-choice question. Was the patient residing in the
+      Valle de Aburrá at the time of diagnosis?
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+
+  Lugar (minicipio/ciudad) donde ocurrió el diagnóstico (Municipio o ciudad donde residía el paciente al momento de ser diagnosticado): # todos los municipios de colombia
+    label: "diagnostic_site"
+    note: "Open-ended question. It appears if Si/No is the answer to diagnostic_residency"
+    nullable: true
+    dtype: categorical
+    #fuzzy_match: true # the canonical values will be defined at the end
+    #threshold: 88
+    #canonical: []
+    transformations:
+      - trim
+      - smart_title_case
+      - empty_to_null
+    invalid_action: flag
+   
+
+  # ---------------------------------------------------------------------------
+  # INSULIN & TREATMENT
+  # ---------------------------------------------------------------------------
+
+  Insulinoterapia:
+    label: "insulin_therapy"
+    note: >
+      Single-choice question. Was the patient residing in the
+      Valle de Aburrá at the time of diagnosis?
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+
+ 
+  Tipos de insulinas/Insulina Aspart:
+    label: "insulin_types/0"
+    note: "Single-choice question"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1,null]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  Tipos de insulinas/Insulina Glulisina:
+    label: "insulin_types/1"
+    note: "Single-choice question"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1,null]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  Tipos de insulinas/ Insulina Lispro:
+    label: "insulin_types/2"
+    note: "Single-choice question"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1,null]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  Tipos de insulinas/Humana Regular (DNAr):
+    label: "insulin_types/3"
+    note: "Single-choice question"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1,null]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  Tipos de insulinas/NPH (DNAr):
+    label: "insulin_types/4"
+    note: "Single-choice question"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1,null]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  Tipos de insulinas/Degludec:
+    label: "insulin_types/5"
+    note: "Single-choice question"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1,null]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  Tipos de insulinas/Detemir:
+    label: "insulin_types/6"
+    note: "Single-choice question"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1,null]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  Tipos de insulinas/Glargina:
+    label: "insulin_types/7"
+    note: "Single-choice question"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1,null]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  Tipos de insulinas/Glargina U-300:
+    label: "insulin_types/8"
+    note: "Single-choice question"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1,null]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  Tipos de insulinas/Glargina/Lixisenatida:
+    label: "insulin_types/9"
+    note: "Single-choice question"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1,null]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  Tipos de insulinas/Degludec/Liraglutida:
+    label: "insulin_types/10"
+    note: "Single-choice question"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1,null]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  Tipos de insulinas/Otros tipos de insulina:
+    label: "insulin_types/11"
+    note: "Single-choice question"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1,null]
+    transformations:
+      - to_int
+    invalid_action: flag
+ 
+  Tipos de insulinas/No reportado en la historia clínica:
+    label: "insulin_types/12"
+    note: "Single-choice question"
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1,null]
+    transformations:
+      - to_int
+    invalid_action: flag
+
+  Otro tipo de insulina:
+    label: "another_insulin"
+    note: "Open-ended question. It appears if 1 in insulin_types/11"
+    nullable: true
+    dtype: categorical
+    #fuzzy_match: true # the canonical values will be defined at the end
+    #threshold: 88
+    #canonical: []
+    transformations:
+      - trim
+      - smart_title_case
+      - empty_to_null
+    invalid_action: flag
+
+  Bomba de insulina:
+    label: "insulin_pump"
+    note: "Does the patient currently use an insulin pump device for diabetes treatment?"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+ 
+  Monitoreo continuo de glucosa:
+    label: "glucose_monitoring"
+    note: "Does the patient currently use a continuous glucose monitoring (CGM) device for diabetes management?"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+ 
+  Glucometría:
+    label: "Glucometr_a"
+    note: "not present in source Excel, derived variable"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+
+  Uso de otros hipoglucemiantes:
+    label: "other_hypoglycemic"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+  # ---------------------------------------------------------------------------
+  # DATES & TIME VARIABLES
+  # (pattern: year → month → time_since for each clinical event)
+  # ---------------------------------------------------------------------------
+
+  Año de diagnóstico:
+    label: "year_diagnosis"
+    note: "Single-choice question"
+    dtype: int
+    nullable: true
+    raw_dtype: date_string 
+    transformations: *year_transforms
+    min: 1900
+    max: 2025
+    special_null_values: [1800]
+    invalid_action: flag
+
+  Mes de diagnóstico de la diabetes tipo 1:
+    label: "month_diagnosis"
+    note: "Single-choice question"
+    dtype: string
+    nullable: true
+    encoding_map: *month_encoding
+    transformations:
+      - trim
+      - map_values
+      - empty_to_null
+    allowed:
+      - "January"
+      - "February"
+      - "March"
+      - "April"
+      - "May"
+      - "June"
+      - "July"
+      - "August"
+      - "September"
+      - "October"
+      - "November"
+      - "December"
+    invalid_action: flag
+
+  time_diagnosis: # the other one appears to be incorrect: time_diagnosis_dm1 
+    label: "Tiempo en años transcurrido desde el nacimiento hasta el diagnóstico"
+    note: "Automatically calculated variable"
+    dtype: int
+    nullable: true
+    min: 0
+    negative_action: null
+    transformations:
+      - to_int
+      - negative_to_null
+    invalid_action: flag
+
+  Año de inicio de síntomas relacionados con la diabetes:
+    label: "year_symptoms"
+    note: "Single-choice question"
+    dtype: int
+    nullable: true
+    raw_dtype: date_string
+    transformations: *year_transforms
+    min: 1900
+    max: 2025
+    special_null_values: [1800]
+    invalid_action: flag
+
+  Mes de inicio de síntomas relacionados con la diabetes:
+    label: "month_symptoms"
+    note: "Single-choice question"
+    dtype: string
+    nullable: true
+    encoding_map: *month_encoding
+    transformations:
+      - trim
+      - map_values
+      - empty_to_null
+    allowed:
+      - "January"
+      - "February"
+      - "March"
+      - "April"
+      - "May"
+      - "June"
+      - "July"
+      - "August"
+      - "September"
+      - "October"
+      - "November"
+      - "December"
+    invalid_action: flag
+
+  time_symptoms: # the other one appears to be incorrect: time_symptoms_dm1 
+    label: "Tiempo en años transcurrido desde el nacimiento hasta el inicio de síntomas"
+    note: "Automatically calculated variable"
+    dtype: int
+    nullable: true
+    min: 0
+    negative_action: null
+    transformations:
+      - to_int
+      - negative_to_null
+    invalid_action: flag
+
+  Año del primer episodio de cetoacidosis diabética o coma diabético (lo que primero ocurra):
+    label: "year_clinical_debut"
+    note: "Single-choice question"
+    dtype: int
+    nullable: true
+    raw_dtype: date_string
+    transformations: *year_transforms
+    min: 1900
+    max: 2025
+    special_null_values: [1800]
+    invalid_action: flag
+
+  Mes del primer episodio de cetoacidosis diabética o coma diabético (lo que primero ocurra):
+    label: "month_clinical_debut"
+    note: "Single-choice question"
+    dtype: string
+    nullable: true
+    encoding_map: *month_encoding
+    transformations:
+      - trim
+      - map_values
+      - empty_to_null
+    allowed:
+      - "January"
+      - "February"
+      - "March"
+      - "April"
+      - "May"
+      - "June"
+      - "July"
+      - "August"
+      - "September"
+      - "October"
+      - "November"
+      - "December"
+    invalid_action: flag
+      
+  
+  time_clinical_debut: # the other one appears to be incorrect: time_clinical_debut_dm1 
+    label: "Tiempo en años transcurrido desde el nacimiento hasta el el primer episodio de cetoacidosis o coma"
+    note: "Automatically calculated variable"
+    dtype: int
+    nullable: true
+    min: 0
+    negative_action: null
+    transformations:
+      - to_int
+      - negative_to_null
+    invalid_action: flag
+
+
+  Año en el que inició por primera vez el uso de insulina:
+    label: "year_insulin"
+    note: "Single-choice question"
+    dtype: int
+    nullable: true
+    raw_dtype: date_string
+    transformations: *year_transforms
+    min: 1900
+    max: 2025
+    special_null_values: [1800]
+    invalid_action: flag
+
+  Mes en el que inició por primera vez el uso de insulina:
+    label: "month_insulin"
+    note: "Single-choice question"
+    dtype: string
+    nullable: true
+    encoding_map: *month_encoding
+    transformations:
+      - trim
+      - map_values
+      - empty_to_null
+    allowed:
+      - "January"
+      - "February"
+      - "March"
+      - "April"
+      - "May"
+      - "June"
+      - "July"
+      - "August"
+      - "September"
+      - "October"
+      - "November"
+      - "December"
+    invalid_action: flag
+      
+  time_insulin: # the other one appears to be incorrect: time_insulin_dm1 
+    label: "Tiempo en años transcurrido desde el diagnóstico hasta el primer uso de insulina"
+    note: "Automatically calculated variable"
+    dtype: int
+    nullable: true
+    min: 0
+    negative_action: null
+    transformations:
+      - to_int
+      - negative_to_null
+    invalid_action: flag
+
+  Año en el que consultó por primera vez por o con un diagnóstico de diabetes:
+    label: "year_consultation"
+    note: "Single-choice question"
+    dtype: int
+    nullable: true
+    raw_dtype: date_string
+    transformations: *year_transforms
+    min: 1900
+    max: 2025
+    special_null_values: [1800]
+    invalid_action: flag
+
+  Mes en el que consultó por primera vez por o con un diagnóstico de diabetes:
+    label: "mounth_consultation"
+    note: "Single-choice question"
+    dtype: string
+    nullable: true
+    encoding_map: *month_encoding
+    transformations:
+      - trim
+      - map_values
+      - empty_to_null
+    allowed:
+      - "January"
+      - "February"
+      - "March"
+      - "April"
+      - "May"
+      - "June"
+      - "July"
+      - "August"
+      - "September"
+      - "October"
+      - "November"
+      - "December"
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # AUTOANTIBODIES
+  # ---------------------------------------------------------------------------
+
+  Autoanticuerpos relacionados con la diabetes:
+    label: "year_positive_ab"
+    dtype: string
+    nullable: true
+    encoding_map: *yn_translate_map
+    transformations: *yn_translate_transforms
+    allowed: ["Yes", "No"]
+    invalid_action: flag
+
+  Año del resultado positivo de autoinmunidad:
+    label: "year_positive_lab"
+    dtype: int
+    nullable: true
+    raw_dtype: date_string
+    transformations: *year_transforms
+    min: 1900
+    max: 2025
+    special_null_values: [1800]
+    invalid_action: flag
+
+  time_positive: # time_positive_dm1
+    label: "Tiempo desde resultado positivo (años)"
+    dtype: int
+    nullable: true
+    min: 0
+    negative_action: null
+    transformations:
+      - to_int
+      - negative_to_null
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # FAMILY HISTORY
+  # ---------------------------------------------------------------------------
+
+  Antecedentes familiares de diabetes tipo 1:
+    label: "ant_familiary_dm1"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+ 
+  Antecedentes familiares de diabetes tipo 2:
+    label: "ant_familiary_dm2"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+ 
+  Antecedentes familiares de diabetes sin especificar:
+    label: "ant_familiary_dm"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+ 
+  Antecedentes maternos de diabetes gestacional:
+    label: "ant_mother_gestacional"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # COMPLICATIONS & COMORBIDITIES
+  # ---------------------------------------------------------------------------
+
+  Antecedentes personales de complicaciones renales:
+    label: "comp_renal"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+ 
+  Antecedentes personales de complicaciones oftalmicas:
+    label: "comp_eyes"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+ 
+  Antecedentes personales de pie diabético:
+    label: "comp_foot"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+
+  Amputación:
+    label: "amputation"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+ 
+  Antecedentes personales de hipertensión:
+    label: "hta"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+ 
+  Antecedentes personales de enfermedad cerebrocardiovascular:
+    label: "cvd"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+ 
+  Antecedentes personales de obesidadobesity:
+    label: "obesity"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+ 
+  Antecedentes personales de COVID-19:
+    label: "covid_19:"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+ 
+  Antecedentes personales de cetoacidosis diabética:
+    label: "ckd"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+ 
+  Antecedentes personales de crisis hipoglucémica severa:
+    label: "hypoglycemia"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+ 
+  Antecedentes personales de alteraciones de la salud mental:
+    label: "mental_health"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+ 
+  Antecedentes personales de otras enfermedades autoinmunes:
+    label: "other_diseases"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+ 
+  # ---------------------------------------------------------------------------
+  # DEATH
+  # ---------------------------------------------------------------------------
+
+  Fallecimiento:
+    label: "death"
+    dtype: string
+    nullable: true
+    allowed:
+      - "Si"
+      - "No"
+    transformations:
+      - trim
+      - smart_title_case    # handles "si", "SI", "no", "NO" variants
+      - empty_to_null
+    invalid_action: flag
+ 
+  Fecha de fallecimiento:
+    label: "death_date"
+    dtype: date
+    nullable: true
+    raw_format: "%Y-%m-%d"
+    transformations:
+      - trim
+      - to_date
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # EPISODES
+  # ---------------------------------------------------------------------------
+ 
+  Fechas de atención general:
+    label: "year_episode"
+    dtype: date
+    nullable: true
+    raw_format: "%m/%Y"
+    transformations:
+      - trim
+      - to_date
+    output_format: "%Y-%m"
+    invalid_action: flag
+ 
+  Fechas de atención por o con diabetes (lo primero que ocurra):
+    label: "year_episode_dm"
+    dtype: date
+    nullable: true
+    raw_format: "%m/%Y"
+    transformations:
+      - trim
+      - to_date
+    output_format: "%Y-%m"
+    invalid_action: flag
+ 
+  # ---------------------------------------------------------------------------
+  # ADMINISTRATIVE
+  # ---------------------------------------------------------------------------
+ 
+  Observaciones generales:
+    label: "observations"
+    dtype: string
+    nullable: true
+    transformations:
+      - sanitize
+      - trim
+      - collapse_spaces
+      - lowercase
+      - empty_to_null
+    max_length: 500
+    invalid_action: flag
+ 
+  Responsable:
+    label: "researcher_name"
+    dtype: string
+    nullable: true
+    transformations:
+      - sanitize
+      - trim
+      - collapse_spaces
+      - smart_title_case
+      - empty_to_null
+    max_length: 120
+    invalid_action: flag
+    note: "consider switching to categorical + fuzzy_match once all researcher names are known"

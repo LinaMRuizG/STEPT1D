@@ -3,3 +3,7 @@ venv/
 
 # Data confidential
 data_confidential/
+
+# Images
+images/
+MediaWebpageAll/

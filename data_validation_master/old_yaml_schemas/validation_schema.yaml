@@ -1,0 +1,1273 @@
+# =============================================================================
+# DATA VALIDATION MASTER SCHEMA
+# Keys   = exact column headers from the raw CSV/XML export
+# label  = short snake_case identifier used in cleaned output
+# =============================================================================
+# Convention:
+#   dtype         : int | float | string | categorical | dichotomous | date
+#   nullable      : true  → pd.NA allowed and expected
+#                   false → pd.NA flagged as "unexpected_null" in audit
+#   invalid_action: flag  → log to audit_log.csv
+#   transformations run in order top → bottom
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# GLOBAL — runs on every column before any variable-level rule
+# -----------------------------------------------------------------------------
+global:
+  null_strings:
+    - ""
+    - "nan"
+    - "NaN"
+    - "NAN"
+    - "NULL"
+    - "null"
+    - "None"
+    - "none"
+    - "Sin Dato"
+    - "Sin dato"
+    - "sin dato"
+    - "sin información"
+    - "Sin información"
+    - "Sin Información"
+    - "sin informacion"
+    - "no reportado"
+    - "No reportado"
+    - "no reportado en la historia clínica"
+    - "No reportado en la historia clínica"
+    - "no se registró en la historia clínica"
+    - "No se registró en la historia clínica"
+    - "no se encuentra información en la historia clínica"
+    - "No se encuentra información en la historia clínica"
+    - "no se encuentra informacion en la historia clinica"
+    - "No es posible establecer el área de residencia"
+  invalid_action: flag
+
+# -----------------------------------------------------------------------------
+# REUSABLE ANCHORS
+# -----------------------------------------------------------------------------
+_anchors:
+
+  # shared transformations for Si/No string variables
+  sino_transforms: &sino_transforms
+    - trim
+    - smart_title_case    # "si"/"SI"/"sí" → "Si", "no"/"NO" → "No"
+    - empty_to_null
+
+  # shared allowed values for Si/No string variables
+  sino_allowed: &sino_allowed
+    - "Si"
+    - "No"
+
+  # shared transformations for year variables (raw format "YYYY-MM-DD")
+  year_transforms: &year_transforms
+    - extract_year        # pd.to_datetime → .dt.year → Int64
+
+  # shared transformations for month variables (raw "Septiembre (09)" → "Septiembre")
+  month_transforms: &month_transforms
+    - trim
+    - extract_month_name  # "Septiembre (09)" → "Septiembre"
+    - smart_title_case
+    - empty_to_null
+
+  # shared allowed values for month variables
+  month_allowed: &month_allowed
+    - "Enero"
+    - "Febrero"
+    - "Marzo"
+    - "Abril"
+    - "Mayo"
+    - "Junio"
+    - "Julio"
+    - "Agosto"
+    - "Septiembre"
+    - "Octubre"
+    - "Noviembre"
+    - "Diciembre"
+
+  # shared rule for binary indicator columns (raw 0.0 / 1.0 / nan)
+  binary_indicator: &binary_indicator
+    dtype: dichotomous
+    nullable: true
+    allowed: [0, 1, null]
+    transformations:
+      - to_int
+    invalid_action: flag
+
+  # shared transformations for time-since variables (int, negatives → null)
+  time_transforms: &time_transforms
+    - to_int
+    - negative_to_null
+
+  # shared year variable base rule
+  year_base: &year_base
+    dtype: int
+    nullable: true
+    raw_dtype: date_string
+    transformations: *year_transforms
+    min: 1900
+    max: 2025
+    special_null_values: [1800]
+    invalid_action: flag
+
+# =============================================================================
+# VARIABLES
+# Key   = exact column header in the raw CSV
+# label = snake_case name used in cleaned output dataframe
+# =============================================================================
+variables:
+
+  # ---------------------------------------------------------------------------
+  # IDENTIFIERS & INSTITUTION
+  # ---------------------------------------------------------------------------
+
+  Institución:
+    label: "institution"
+    note: >
+      Open-ended question. Institution where the patient data is
+      being collected. Fuzzy-matched to canonical list then encoded.
+    dtype: int
+    nullable: false
+    fuzzy_match: true
+    threshold: 88
+    canonical:
+      - "Hospital Pablo Tobon Uribe"
+      - "Hospital Universitario San Vicente Fundacion"
+      - "Clinica Noel"
+      - "Hospital General de Medellin"
+      - "Hospital Alma Mater de Antioquia"
+      - "Hospital Manuel Uribe Angel"
+      - "Hospital Marco Fidel Suarez"
+    encoding:
+      "Hospital Pablo Tobon Uribe":                   0
+      "Hospital Universitario San Vicente Fundacion":  1
+      "Clinica Noel":                                  2
+      "Hospital General de Medellin":                  3
+      "Hospital Alma Mater de Antioquia":              4
+      "Hospital Manuel Uribe Angel":                   5
+      "Hospital Marco Fidel Suarez":                   6
+    transformations:
+      - trim
+      - smart_title_case
+      - empty_to_null
+      - encode              # runs AFTER fuzzy (fuzzy applied separately before encode)
+    invalid_action: flag
+
+  Nombre(s) del paciente:
+    label: "first_name"
+    note: "Open-ended question. First name(s) of the patient."
+    dtype: string
+    nullable: false
+    dedup_key: true
+    dedup_normalize: true   # generates shadow column first_name_key
+    transformations:
+      - sanitize
+      - trim
+      - collapse_spaces
+      - smart_title_case
+      - empty_to_null
+    max_length: 120
+    pattern: "^[\\p{L}\\s]+$"
+    invalid_action: flag
+
+  Apellido(s) del paciente:
+    label: "last_name"
+    note: "Open-ended question. Last name(s) of the patient."
+    dtype: string
+    nullable: false
+    dedup_key: true
+    dedup_normalize: true   # generates shadow column last_name_key
+    transformations:
+      - sanitize
+      - trim
+      - collapse_spaces
+      - smart_title_case
+      - empty_to_null
+    max_length: 120
+    pattern: "^[\\p{L}\\s]+$"
+    invalid_action: flag
+
+  Tipo de documento de identidad:
+    label: "identity_document_type"
+    note: >
+      Single-choice question. Type of identity document used
+      during the last clinical encounter. Raw values are already
+      the string labels.
+    dtype: string
+    nullable: true
+    allowed:
+      - "Registro civil"
+      - "Tarjeta de identidad"
+      - "Cédula de ciudadanía"
+      - "Cédula de extranjería"
+      - "Otro documento de identidad"
+    transformations:
+      - trim
+      - empty_to_null
+    invalid_action: flag
+
+  Otro tipo de documento de identidad:
+    label: "another_id"
+    note: "Open-ended question. Free text for other identity document types."
+    dtype: string
+    nullable: true
+    transformations:
+      - trim
+      - smart_title_case
+      - empty_to_null
+    invalid_action: flag
+
+  Número documento de identidad:
+    label: "id_number"
+    note: "Open-ended question. Patient identity document number."
+    dtype: string
+    nullable: false
+    dedup_key: true
+    transformations:
+      - trim
+      - uppercase
+      - empty_to_null
+    pattern: "^[A-Z0-9\\-]+$"
+    invalid_action: flag
+
+  Sexo biológico:
+    label: "sex"
+    note: >
+      Single-choice question. Patient biological sex as reported
+      in the medical record.
+    dtype: string
+    nullable: true
+    allowed:
+      - "Masculino"
+      - "Femenino"
+    transformations:
+      - trim
+      - empty_to_null
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # BIRTH & DEMOGRAPHICS
+  # ---------------------------------------------------------------------------
+
+  País de nacimiento:
+    label: "country_birth"
+    note: "Open-ended question. Country of birth. ~191 possible values."
+    dtype: categorical
+    nullable: true
+    fuzzy_match: true
+    threshold: 88
+    canonical:
+      - "Afganistán"
+      - "Albania"
+      - "Argelia"
+      - "Andorra"
+      - "Angola"
+      - "Argentina"
+      - "Armenia"
+      - "Australia"
+      - "Austria"
+      - "Azerbaiyán"
+      - "Bélgica"
+      - "Bolivia"
+      - "Brasil"
+      - "Bulgaria"
+      - "Canadá"
+      - "Chile"
+      - "China"
+      - "Colombia"
+      - "Costa Rica"
+      - "Cuba"
+      - "Ecuador"
+      - "Egipto"
+      - "El Salvador"
+      - "España"
+      - "Estados Unidos"
+      - "Francia"
+      - "Alemania"
+      - "Guatemala"
+      - "Haití"
+      - "Honduras"
+      - "India"
+      - "Italia"
+      - "Jamaica"
+      - "Japón"
+      - "México"
+      - "Nicaragua"
+      - "Panamá"
+      - "Paraguay"
+      - "Perú"
+      - "Portugal"
+      - "Reino Unido"
+      - "República Dominicana"
+      - "Rusia"
+      - "Uruguay"
+      - "Venezuela"
+      - "Vietnam"
+      # TODO: add remaining ~145 countries
+    transformations:
+      - trim
+      - smart_title_case
+      - empty_to_null
+    invalid_action: flag
+
+  Departamento de Nacimiento:
+    label: "birth_department"
+    note: >
+      Open-ended question. Colombian department of birth.
+      Only appears if country_birth is Colombia. ~32 departments.
+    dtype: categorical
+    nullable: true
+    fuzzy_match: true
+    threshold: 88
+    canonical:
+      - "Amazonas"
+      - "Antioquia"
+      - "Arauca"
+      - "Atlántico"
+      - "Bolívar"
+      - "Boyacá"
+      - "Caldas"
+      - "Caquetá"
+      - "Casanare"
+      - "Cauca"
+      - "Cesar"
+      - "Chocó"
+      - "Córdoba"
+      - "Cundinamarca"
+      - "Guainía"
+      - "Guaviare"
+      - "Huila"
+      - "La Guajira"
+      - "Magdalena"
+      - "Meta"
+      - "Nariño"
+      - "Norte de Santander"
+      - "Putumayo"
+      - "Quindío"
+      - "Risaralda"
+      - "San Andrés y Providencia"
+      - "Santander"
+      - "Sucre"
+      - "Tolima"
+      - "Valle del Cauca"
+      - "Vaupés"
+      - "Vichada"
+    transformations:
+      - trim
+      - smart_title_case
+      - empty_to_null
+    invalid_action: flag
+
+  Municipio de nacimiento:
+    label: "municipality_birth"
+    note: >
+      Open-ended question. Colombian municipality of birth.
+      Only appears if country_birth is Colombia. ~1123 municipalities.
+      Fuzzy match to canonical list.
+    dtype: categorical
+    nullable: true
+    fuzzy_match: true
+    threshold: 88
+    canonical:
+      - "Medellín"
+      - "Bogotá D.C."
+      - "Cali"
+      - "Barranquilla"
+      - "Cartagena"
+      - "Bucaramanga"
+      - "Pereira"
+      - "Manizales"
+      - "Santa Marta"
+      - "Cúcuta"
+      - "Ibagué"
+      - "Pasto"
+      - "Montería"
+      - "Villavicencio"
+      - "Armenia"
+      - "Valledupar"
+      - "Popayán"
+      - "Neiva"
+      - "Palmira"
+      - "Buenaventura"
+      - "Bello"
+      - "Envigado"
+      - "Itagüí"
+      - "Rionegro"
+      - "Apartadó"
+      # TODO: populate with full ~1123 municipality list
+    transformations:
+      - trim
+      - smart_title_case
+      - empty_to_null
+    invalid_action: flag
+
+  Año de nacimiento:
+    label: "birthdate_year"
+    note: >
+      Single-choice question. Patient year of birth as recorded
+      in the medical record. 1800 is a sentinel for unknown.
+    <<: *year_base
+    nullable: true            # overrides year_base default if needed
+
+  Mes de nacimiento:
+    label: "birthdate_month"
+    note: "Single-choice question. Patient month of birth."
+    dtype: string
+    nullable: true
+    allowed: *month_allowed
+    transformations: *month_transforms
+    invalid_action: flag
+
+  age:
+    label: "edad_actual"
+    note: "Automatically estimated variable. Age in completed years."
+    dtype: int
+    nullable: true
+    min: 0
+    max: 120
+    transformations:
+      - to_int
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # RESIDENCE
+  # ---------------------------------------------------------------------------
+
+  País de residencia:
+    label: "country_residence"
+    note: "Open-ended question. Country of current residence. ~191 possible values."
+    dtype: categorical
+    nullable: true
+    fuzzy_match: true
+    threshold: 88
+    canonical:
+      - "Colombia"
+      - "Venezuela"
+      - "Ecuador"
+      - "Perú"
+      - "Brasil"
+      - "Argentina"
+      - "Estados Unidos"
+      - "España"
+      - "México"
+      # TODO: add remaining countries (same list as country_birth)
+    transformations:
+      - trim
+      - smart_title_case
+      - empty_to_null
+    invalid_action: flag
+
+  Departamento de residencia:
+    label: "department_residence"
+    note: >
+      Open-ended question. Colombian department of residence.
+      Only appears if country_residence is Colombia.
+    dtype: categorical
+    nullable: true
+    fuzzy_match: true
+    threshold: 88
+    canonical:
+      - "Amazonas"
+      - "Antioquia"
+      - "Arauca"
+      - "Atlántico"
+      - "Bolívar"
+      - "Boyacá"
+      - "Caldas"
+      - "Caquetá"
+      - "Casanare"
+      - "Cauca"
+      - "Cesar"
+      - "Chocó"
+      - "Córdoba"
+      - "Cundinamarca"
+      - "Guainía"
+      - "Guaviare"
+      - "Huila"
+      - "La Guajira"
+      - "Magdalena"
+      - "Meta"
+      - "Nariño"
+      - "Norte de Santander"
+      - "Putumayo"
+      - "Quindío"
+      - "Risaralda"
+      - "San Andrés y Providencia"
+      - "Santander"
+      - "Sucre"
+      - "Tolima"
+      - "Valle del Cauca"
+      - "Vaupés"
+      - "Vichada"
+    transformations:
+      - trim
+      - smart_title_case
+      - empty_to_null
+    invalid_action: flag
+
+  Municipio o corregimiento de residencia en el Valle de Aburrá:
+    label: "municipality_residence"
+    note: >
+      Single-choice question. Appears if department_residence is Antioquia.
+      Raw values are the full string labels.
+    dtype: string
+    nullable: true
+    allowed:
+      - "Medellín"
+      - "Itagüí"
+      - "Envigado"
+      - "Sabaneta"
+      - "Caldas"
+      - "La Estrella"
+      - "Bello"
+      - "Barbosa"
+      - "Copacabana"
+      - "Girardota"
+      - "Corregimiento de Altavista"
+      - "Corregimiento de Palmitas"
+      - "Corregimiento de San Antonio de Prado"
+      - "Corregimiento de San Cristóbal"
+      - "Corregimiento de Santa Elena"
+      - "Valle de Aburrá sin especificar"
+      - "Residencia fuera del Valle de Aburrá"
+    transformations:
+      - trim
+      - empty_to_null
+    invalid_action: flag
+
+  Residencia fuera del Valle de Aburrá:
+    label: "another_municipality_res"
+    note: >
+      Open-ended question. Appears if municipality_residence is
+      Residencia fuera del Valle de Aburrá. Canonical list to be
+      defined once unique raw values are collected.
+    dtype: categorical
+    nullable: true
+    fuzzy_match: false        # enable once canonical list is populated
+    # threshold: 88
+    # canonical: []           # TODO: populate after exploring raw values
+    transformations:
+      - trim
+      - smart_title_case
+      - empty_to_null
+    invalid_action: flag
+
+  Dirección de residencia:
+    label: "address_res"
+    note: "Open-ended question. Patient current residential address."
+    dtype: string
+    nullable: true
+    transformations:
+      - sanitize
+      - trim
+      - lowercase
+      - empty_to_null
+    invalid_action: flag
+
+  Nombre barrio o vereda de residencia:
+    label: "neighborhood_residence"
+    note: >
+      Open-ended question. Neighborhood or vereda of residence.
+      Appears if municipality_residence is one of the listed municipalities.
+      Canonical list to be defined once unique raw values are collected.
+    dtype: categorical
+    nullable: true
+    fuzzy_match: false        # enable once canonical list is populated
+    # threshold: 88
+    # canonical: []           # TODO: populate after exploring raw values
+    transformations:
+      - trim
+      - smart_title_case
+      - empty_to_null
+    invalid_action: flag
+
+  Comuna de residencia:
+    label: "commune_residence"
+    note: "Single-choice question. Appears if municipality_residence is Medellín."
+    dtype: string
+    nullable: true
+    allowed:
+      - "Popular"
+      - "Santa Cruz"
+      - "Manrique"
+      - "Aranjuez"
+      - "Castilla"
+      - "Doce de Octubre"
+      - "Robledo"
+      - "Villa Hermosa"
+      - "Buenos Aires"
+      - "La Candelaria"
+      - "Laureles-Estadio"
+      - "La América"
+      - "San Javier"
+      - "El Poblado"
+      - "Guayabal"
+      - "Belén"
+    transformations:
+      - trim
+      - extract_commune_name  # "Popular (1)" → "Popular"
+      - empty_to_null
+    invalid_action: flag
+
+  Área de residencia:
+    label: "area_residence"
+    note: "Single-choice question."
+    dtype: string
+    nullable: true
+    allowed:
+      - "Urbano"
+      - "Rural"
+    transformations:
+      - trim
+      - empty_to_null
+    invalid_action: flag
+
+  Tipo de cobertura en la atención:
+    label: "healthcare_system"
+    note: >
+      Single-choice question. Patient health system affiliation
+      type as recorded in the medical record.
+    dtype: string
+    nullable: true
+    allowed:
+      - "Contributivo"
+      - "Subsidiado"
+      - "Especial (Fuerzas Militares, Policía Nacional, Magisterio, Ecopetrol)"
+      - "No tiene afiliación al sistema de salud"
+      - "Póliza de seguro"
+      - "Particular"
+    transformations:
+      - trim
+      - empty_to_null
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # DIAGNOSIS
+  # ---------------------------------------------------------------------------
+
+  Códigos diagnósticos reportados/E100 diabetes mellitus insulinodependiente con coma:
+    label: "diagnostic_codes/0"
+    note: "E100 - DM1 con coma"
+    <<: *binary_indicator
+
+  Códigos diagnósticos reportados/E101 diabetes mellitus insulinodependiente con cetoacidosis:
+    label: "diagnostic_codes/1"
+    note: "E101 - DM1 con cetoacidosis"
+    <<: *binary_indicator
+
+  Códigos diagnósticos reportados/E102 diabetes mellitus insulinodependiente con complicaciones renales:
+    label: "diagnostic_codes/2"
+    note: "E102 - DM1 con complicaciones renales"
+    <<: *binary_indicator
+
+  Códigos diagnósticos reportados/E103 diabetes mellitus insulinodependiente con complicaciones oftálmicas:
+    label: "diagnostic_codes/3"
+    note: "E103 - DM1 con complicaciones oftálmicas"
+    <<: *binary_indicator
+
+  Códigos diagnósticos reportados/E104 diabetes mellitus insulinodependiente con complicaciones neurológicas:
+    label: "diagnostic_codes/4"
+    note: "E104 - DM1 con complicaciones neurológicas"
+    <<: *binary_indicator
+
+  Códigos diagnósticos reportados/E105 diabetes mellitus insulinodependiente con complicaciones circulatorias periféricas:
+    label: "diagnostic_codes/5"
+    note: "E105 - DM1 con complicaciones circulatorias periféricas"
+    <<: *binary_indicator
+
+  Códigos diagnósticos reportados/E106 diabetes mellitus insulinodependiente con otras complicaciones especificadas:
+    label: "diagnostic_codes/6"
+    note: "E106 - DM1 con otras complicaciones especificadas"
+    <<: *binary_indicator
+
+  Códigos diagnósticos reportados/E107 diabetes mellitus insulinodependiente con complicaciones múltiples:
+    label: "diagnostic_codes/7"
+    note: "E107 - DM1 con complicaciones múltiples"
+    <<: *binary_indicator
+
+  Códigos diagnósticos reportados/E108 diabetes mellitus insulinodependiente con complicaciones no especificadas:
+    label: "diagnostic_codes/8"
+    note: "E108 - DM1 con complicaciones no especificadas"
+    <<: *binary_indicator
+
+  Códigos diagnósticos reportados/E109 diabetes mellitus insulinodependiente sin mención de complicación:
+    label: "diagnostic_codes/9"
+    note: "E109 - DM1 sin mención de complicación"
+    <<: *binary_indicator
+
+  Estrategia de confirmación del caso de diabetes tipo 1:
+    label: "diagnostic_confirmation"
+    note: "Single-choice question. Diagnostic confirmation strategy."
+    dtype: string
+    nullable: true
+    allowed:
+      - "Criterio clínico"
+      - "Criterios ADA 2026"
+      - "Ambas estrategias"
+    coerce:
+      "diagnóstico realizado por el médico tratante según criterio clínico": "Criterio clínico"
+      "diagnostico realizado por el medico tratante segun criterio clinico": "Criterio clínico"
+      "diganóstico realizado por el médico tratante según criterio clínico": "Criterio clínico"  # typo variant
+      "aplicación de criterios ada 2026 por especialista del proyecto":      "Criterios ADA 2026"
+      "aplicacion de criterios ada 2026 por especialista del proyecto":      "Criterios ADA 2026"
+      "ambas estrategias":                                                   "Ambas estrategias"
+    transformations:
+      - trim
+      - lowercase
+      - coerce
+      - empty_to_null
+    invalid_action: flag
+
+  Diagnóstico intrahospitalario:
+    label: "hospital_diagnosis"
+    note: >
+      Was the DM1 diagnosis made at the same institution where
+      data is being collected? Not present in source Excel.
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  Residencia en el Valle de Aburrá durante el diagnóstico:
+    label: "diagnostic_residency"
+    note: >
+      Single-choice question. Was the patient residing in the
+      Valle de Aburrá at the time of diagnosis?
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  Lugar (minicipio/ciudad) donde ocurrió el diagnóstico (Municipio o ciudad donde residía el paciente al momento de ser diagnosticado):
+    label: "diagnostic_site"
+    note: >
+      Open-ended question. Municipality or city where the diagnosis
+      occurred. Appears if diagnostic_residency is answered.
+      Canonical list to be defined once unique raw values are collected.
+    dtype: categorical
+    nullable: true
+    fuzzy_match: false        # enable once canonical list is populated
+    # canonical: []           # TODO: populate after exploring raw values
+    transformations:
+      - trim
+      - smart_title_case
+      - empty_to_null
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # INSULIN & TREATMENT
+  # ---------------------------------------------------------------------------
+
+  Insulinoterapia:
+    label: "insulin_therapy"
+    note: "Single-choice question. Does the patient currently use insulin therapy?"
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  Tipos de insulinas/Insulina Aspart:
+    label: "insulin_types/0"
+    note: "Insulina Aspart"
+    <<: *binary_indicator
+
+  Tipos de insulinas/Insulina Glulisina:
+    label: "insulin_types/1"
+    note: "Insulina Glulisina"
+    <<: *binary_indicator
+
+  Tipos de insulinas/ Insulina Lispro:
+    label: "insulin_types/2"
+    note: "Insulina Lispro"
+    <<: *binary_indicator
+
+  Tipos de insulinas/Humana Regular (DNAr):
+    label: "insulin_types/3"
+    note: "Humana Regular (DNAr)"
+    <<: *binary_indicator
+
+  Tipos de insulinas/NPH (DNAr):
+    label: "insulin_types/4"
+    note: "NPH (DNAr)"
+    <<: *binary_indicator
+
+  Tipos de insulinas/Degludec:
+    label: "insulin_types/5"
+    note: "Degludec"
+    <<: *binary_indicator
+
+  Tipos de insulinas/Detemir:
+    label: "insulin_types/6"
+    note: "Detemir"
+    <<: *binary_indicator
+
+  Tipos de insulinas/Glargina:
+    label: "insulin_types/7"
+    note: "Glargina"
+    <<: *binary_indicator
+
+  Tipos de insulinas/Glargina U-300:
+    label: "insulin_types/8"
+    note: "Glargina U-300"
+    <<: *binary_indicator
+
+  Tipos de insulinas/Glargina/Lixisenatida:
+    label: "insulin_types/9"
+    note: "Glargina/Lixisenatida"
+    <<: *binary_indicator
+
+  Tipos de insulinas/Degludec/Liraglutida:
+    label: "insulin_types/10"
+    note: "Degludec/Liraglutida"
+    <<: *binary_indicator
+
+  Tipos de insulinas/Otros tipos de insulina:
+    label: "insulin_types/11"
+    note: "Otros tipos de insulina"
+    <<: *binary_indicator
+
+  Tipos de insulinas/No reportado en la historia clínica:
+    label: "insulin_types/12"
+    note: "No reportado en la historia clínica"
+    <<: *binary_indicator
+
+  Otro tipo de insulina:
+    label: "another_insulin"
+    note: >
+      Open-ended question. Appears if insulin_types/11 is 1.
+      Canonical list to be defined once unique raw values are collected.
+    dtype: categorical
+    nullable: true
+    fuzzy_match: false        # enable once canonical list is populated
+    transformations:
+      - trim
+      - smart_title_case
+      - empty_to_null
+    invalid_action: flag
+
+  Bomba de insulina:
+    label: "insulin_pump"
+    note: "Single-choice question. Does the patient use an insulin pump?"
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  Monitoreo continuo de glucosa:
+    label: "glucose_monitoring"
+    note: "Single-choice question. Does the patient use a CGM device?"
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  Glucometría:
+    label: "glucometria"
+    note: "Single-choice question. Not present in source Excel."
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  Uso de otros hipoglucemiantes:
+    label: "other_hypoglycemic"
+    note: "Single-choice question. Does the patient use other hypoglycemic agents?"
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # DATES & TIME VARIABLES
+  # Pattern: year → month → time_since for each clinical event
+  # ---------------------------------------------------------------------------
+
+  Año de diagnóstico:
+    label: "year_diagnosis"
+    note: "Single-choice question. Year of DM1 diagnosis."
+    <<: *year_base
+
+  Mes de diagnóstico de la diabetes tipo 1:
+    label: "month_diagnosis"
+    note: "Single-choice question. Month of DM1 diagnosis."
+    dtype: string
+    nullable: true
+    allowed: *month_allowed
+    transformations: *month_transforms
+    invalid_action: flag
+
+  Tiempo desde el nacimiento hasta el diagnóstico:
+    label: "time_diagnosis"
+    note: "Automatically calculated. Years from birth to diagnosis."
+    dtype: int
+    nullable: true
+    min: 0
+    negative_action: null
+    transformations: *time_transforms
+    invalid_action: flag
+
+  Año de inicio de síntomas relacionados con la diabetes:
+    label: "year_symptoms"
+    note: "Single-choice question. Year symptoms began."
+    <<: *year_base
+
+  Mes de inicio de síntomas relacionados con la diabetes:
+    label: "month_symptoms"
+    note: "Single-choice question. Month symptoms began."
+    dtype: string
+    nullable: true
+    allowed: *month_allowed
+    transformations: *month_transforms
+    invalid_action: flag
+
+  Tiempo desde el nacimiento hasta el inicio de síntomas:
+    label: "time_symptoms"
+    note: "Automatically calculated. Years from birth to symptom onset."
+    dtype: int
+    nullable: true
+    min: 0
+    negative_action: null
+    transformations: *time_transforms
+    invalid_action: flag
+
+  Año del primer episodio de cetoacidosis diabética o coma diabético (lo que primero ocurra):
+    label: "year_clinical_debut"
+    note: "Single-choice question. Year of first DKA or diabetic coma episode."
+    <<: *year_base
+
+  Mes del primer episodio de cetoacidosis diabética o coma diabético (lo que primero ocurra):
+    label: "month_clinical_debut"
+    note: "Single-choice question. Month of first DKA or diabetic coma episode."
+    dtype: string
+    nullable: true
+    allowed: *month_allowed
+    transformations: *month_transforms
+    invalid_action: flag
+
+  Tiempo desde el nacimiento hasta el debut clínico:
+    label: "time_clinical_debut"
+    note: "Automatically calculated. Years from birth to first DKA/coma episode."
+    dtype: int
+    nullable: true
+    min: 0
+    negative_action: null
+    transformations: *time_transforms
+    invalid_action: flag
+
+  Año en el que inició por primera vez el uso de insulina:
+    label: "year_insulin"
+    note: "Single-choice question. Year insulin use began."
+    <<: *year_base
+
+  Mes en el que inició por primera vez el uso de insulina:
+    label: "month_insulin"
+    note: "Single-choice question. Month insulin use began."
+    dtype: string
+    nullable: true
+    allowed: *month_allowed
+    transformations: *month_transforms
+    invalid_action: flag
+
+  Tiempo desde el diagnóstico hasta el primer uso de insulina:
+    label: "time_insulin"
+    note: "Automatically calculated. Years from diagnosis to first insulin use."
+    dtype: int
+    nullable: true
+    min: 0
+    negative_action: null
+    transformations: *time_transforms
+    invalid_action: flag
+
+  Año en el que consultó por primera vez por o con un diagnóstico de diabetes:
+    label: "year_consultation"
+    note: "Single-choice question. Year of first diabetes consultation."
+    <<: *year_base
+
+  Mes en el que consultó por primera vez por o con un diagnóstico de diabetes:
+    label: "month_consultation"
+    note: "Single-choice question. Month of first diabetes consultation."
+    dtype: string
+    nullable: true
+    allowed: *month_allowed
+    transformations: *month_transforms
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # AUTOANTIBODIES
+  # ---------------------------------------------------------------------------
+
+  Autoanticuerpos relacionados con la diabetes:
+    label: "autoantibodies"
+    note: "Single-choice question. Diabetes-related autoantibody result."
+    dtype: string
+    nullable: true
+    allowed:
+      - "Negativo"
+      - "Positivo"
+    transformations:
+      - trim
+      - smart_title_case
+      - empty_to_null
+    invalid_action: flag
+
+  Año del resultado positivo de autoinmunidad:
+    label: "year_positive_ab_lab"
+    note: "Single-choice question. Year of positive autoimmunity result."
+    <<: *year_base
+
+  Tiempo desde resultado positivo de autoinmunidad:
+    label: "time_positive"
+    note: "Automatically calculated. Years since positive autoimmunity result."
+    dtype: int
+    nullable: true
+    min: 0
+    negative_action: null
+    transformations: *time_transforms
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # FAMILY HISTORY
+  # ---------------------------------------------------------------------------
+
+  Antecedentes familiares de diabetes tipo 1:
+    label: "ant_familiary_dm1"
+    note: "Single-choice question. Family history of DM1."
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  Antecedentes familiares de diabetes tipo 2:
+    label: "ant_familiary_dm2"
+    note: "Single-choice question. Family history of DM2."
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  Antecedentes familiares de diabetes sin especificar:
+    label: "ant_familiary_dm"
+    note: "Single-choice question. Family history of unspecified diabetes."
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  Antecedentes maternos de diabetes gestacional:
+    label: "ant_mother_gestacional"
+    note: "Single-choice question. Maternal history of gestational diabetes."
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # COMPLICATIONS & COMORBIDITIES
+  # ---------------------------------------------------------------------------
+
+  Antecedentes personales de complicaciones renales:
+    label: "comp_renal"
+    note: "Single-choice question. Personal history of renal complications."
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  Antecedentes personales de complicaciones oftalmicas:
+    label: "comp_eyes"
+    note: "Single-choice question. Personal history of ophthalmic complications."
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  Antecedentes personales de pie diabético:
+    label: "comp_foot"
+    note: "Single-choice question. Personal history of diabetic foot."
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  Amputación:
+    label: "amputation"
+    note: "Single-choice question. Personal history of amputation."
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  Antecedentes personales de hipertensión:
+    label: "hta"
+    note: "Single-choice question. Personal history of hypertension."
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  Antecedentes personales de enfermedad cerebrocardiovascular:
+    label: "cvd"
+    note: "Single-choice question. Personal history of cardiovascular disease."
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  Antecedentes personales de obesidad:
+    label: "obesity"
+    note: "Single-choice question. Personal history of obesity."
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  Antecedentes personales de COVID-19:
+    label: "covid_19"
+    note: "Single-choice question. Personal history of COVID-19."
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  Antecedentes personales de cetoacidosis diabética:
+    label: "ckd"
+    note: "Single-choice question. Personal history of diabetic ketoacidosis."
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  Antecedentes personales de crisis hipoglucémica severa:
+    label: "hypoglycemia"
+    note: "Single-choice question. Personal history of severe hypoglycemic crisis."
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  Antecedentes personales de alteraciones de la salud mental:
+    label: "mental_health"
+    note: "Single-choice question. Personal history of mental health disorders."
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  Antecedentes personales de otras enfermedades autoinmunes:
+    label: "other_diseases"
+    note: "Single-choice question. Personal history of other autoimmune diseases."
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # DEATH
+  # ---------------------------------------------------------------------------
+
+  Fallecimiento:
+    label: "death"
+    note: "Single-choice question. Has the patient died?"
+    dtype: string
+    nullable: true
+    allowed: *sino_allowed
+    transformations: *sino_transforms
+    invalid_action: flag
+
+  Fecha de fallecimiento:
+    label: "death_date"
+    note: "Date of death. Format YYYY-MM-DD."
+    dtype: date
+    nullable: true
+    raw_format: "%Y-%m-%d"
+    transformations:
+      - trim
+      - to_date             # pd.to_datetime errors='coerce' → NaT for nan/empty
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # EPISODES
+  # ---------------------------------------------------------------------------
+
+  Fechas de atención general:
+    label: "year_episode"
+    note: "Date of general care episode. Format MM/YYYY."
+    dtype: date
+    nullable: true
+    raw_format: "%m/%Y"
+    transformations:
+      - trim
+      - to_date
+    output_format: "%Y-%m"
+    invalid_action: flag
+    note: "Day set to 1 as placeholder internally."
+
+  Fechas de atención por o con diabetes (lo primero que ocurra):
+    label: "year_episode_dm"
+    note: "Date of diabetes care episode. Format MM/YYYY."
+    dtype: date
+    nullable: true
+    raw_format: "%m/%Y"
+    transformations:
+      - trim
+      - to_date
+    output_format: "%Y-%m"
+    invalid_action: flag
+
+  # ---------------------------------------------------------------------------
+  # ADMINISTRATIVE
+  # ---------------------------------------------------------------------------
+
+  observations:
+    label: "observations"
+    note: "Open-ended field. Free text observations by the researcher."
+    dtype: string
+    nullable: true
+    transformations:
+      - sanitize
+      - trim
+      - collapse_spaces
+      - lowercase
+      - empty_to_null
+    max_length: 500
+    invalid_action: flag
+
+  researcher_name:
+    label: "researcher_name"
+    note: >
+      Name of the researcher who collected the data.
+      Consider switching to categorical + fuzzy_match once all
+      researcher names are known.
+    dtype: string
+    nullable: true
+    transformations:
+      - sanitize
+      - trim
+      - collapse_spaces
+      - smart_title_case
+      - empty_to_null
+    max_length: 120
+    invalid_action: flag
