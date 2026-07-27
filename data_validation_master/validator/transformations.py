@@ -16,6 +16,7 @@ To add a new transformation:
 from __future__ import annotations
 import unicodedata
 import pandas as pd
+import re
 
 
 # ---------------------------------------------------------------------------
@@ -227,24 +228,28 @@ def to_date(series: pd.Series, fmt: str = None) -> pd.Series:
 
 def extract_year(series: pd.Series) -> pd.Series:
     """
-    Extract the 4-digit year from date strings in "YYYY-MM-DD" format.
+    Extracts the 4-digit year as a clean string ("YYYY") from date strings.
 
-    "2018-01-01" → 2018
-    "1800-01-01" → 1800  (sentinel, handled by special_null_values later)
-    "nan"        → pd.NA
-    pd.NA        → pd.NA
-
-    Returns Int64 (nullable integer) so NaT years are pd.NA not NaN float.
+    "2018-01-01" -> "2018"
+    "1800-01-01" -> "1800" (sentinel, handled by special_null_values)
+    "nan"        -> None / pd.NA
     """
+    # 1. Parse dates safely
     parsed = pd.to_datetime(series, format="%Y-%m-%d", errors="coerce")
-    year_values = parsed.dt.year
-    return pd.Series(
-        pd.array(year_values, dtype="Int64"),
-        index=series.index,
-        name=series.name,
-)
+    
+    # 2. Format valid dates to 4-digit YYYY strings, leaves NaT as NaN
+    years_str = parsed.dt.strftime("%Y")
+    
+    # 3. Return as object series with Python None for missing values
+    return years_str.astype("object").where(pd.notna(years_str), None)
 
-
+def to_none(series: pd.Series) -> pd.Series:
+    """
+    Replaces pd.NA, np.nan, NaT, and string representations of nulls with Python None objects.
+    Note: Converting to object dtype is necessary to hold Python None.
+    """
+    # Replace pd.NA / NaN values with None
+    return series.astype("object").where(pd.notna(series), None)
 
 # ---------------------------------------------------------------------------
 # Domain-specific extraction
@@ -310,6 +315,41 @@ def normalize_accents_key(series: pd.Series) -> pd.Series:
         return series.apply(lambda v: _normalize(v) if not pd.isna(v) else v)
     return series
 
+# ---------------------------------------------------------------------------
+# For the list of dates
+# ---------------------------------------------------------------------------
+def collapse_spaces_date(series: pd.Series) -> pd.Series:
+    """
+    Standardizes delimiters (converts ; to ,), collapses spaces, 
+    and strips trailing/leading commas or dangling punctuation.
+    """
+    def _clean(val):
+        if pd.isna(val) or str(val).lower() in ['nan', 'none', 'null', '']:
+            return pd.NA
+        
+        # 1. STEP AT THE START: Replace all semicolons with commas
+        cleaned = str(val).replace(';', ',')
+        
+        # 2. Replace all whitespaces/newlines/tabs with a single space
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        
+        # 3. Clean spaces around commas (e.g., "04/2018 , 05/2018" -> "04/2018, 05/2018")
+        cleaned = re.sub(r'\s*,\s*', ', ', cleaned)
+        
+        # 4. Collapse multiple consecutive commas into a single comma
+        cleaned = re.sub(r'(,\s*)+', ', ', cleaned)
+        
+        # 5. Strip leading and trailing commas and spaces
+        cleaned = cleaned.strip(', ')
+        
+        # 6. Check if string became empty after cleaning
+        if not cleaned:
+            return pd.NA
+            
+        return cleaned
+
+    return series.apply(_clean)
+
 
 # ---------------------------------------------------------------------------
 # TRANSFORMATIONS registry
@@ -338,10 +378,13 @@ TRANSFORMATIONS: dict[str, callable] = {
     # ── date ─────────────────────────────────────────────────────────────────
     "to_date":               to_date,
     "extract_year":          extract_year,
+    "to_none":               to_none,
     # ── domain-specific ──────────────────────────────────────────────────────
     "extract_month_name":    extract_month_name,
     "extract_commune_name":  extract_commune_name,
     "normalize_accents_key": normalize_accents_key,
+    #-- list of dates as string -----------------------------------------------
+    'collapse_spaces_date': collapse_spaces,
     # ── handled in validator (need rule context) ──────────────────────────────
     # "map_values" → validator._apply_single_transform uses rule.map_values
     # "encode"     → validator._apply_single_transform uses rule.encoding

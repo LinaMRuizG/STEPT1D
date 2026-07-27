@@ -134,14 +134,14 @@ _anchors:
   year_transforms: &year_transforms
     - extract_year          # pd.to_datetime → .dt.year → Int64
 
+
   year_base: &year_base
-    dtype: int
+    dtype: string           # Changed from int to string
     nullable: true
-    raw_dtype: date_string  # input format "YYYY-MM-DD"
+    raw_dtype: date_string
     transformations: *year_transforms
-    min: 1900
-    max: 2026
-    special_null_values: [1800]   # 1800 → null (sentinel for unknown year)
+    pattern: '^\d{4}$'      # Validates exactly 4 digits (e.g., "2018")
+    special_null_values: ["1800", 1800]  # Standardizes string sentinel to null
     invalid_action: flag
 
   # ---------------------------------------------------------------------------
@@ -2159,26 +2159,35 @@ variables:
 
   Fechas de atención general:
     label: "year_episode"
-    note: "Date of general care episode. Raw format MM/YYYY."
-    dtype: date
+    note: "Comma-separated list of care episode dates in MM/YYYY format."
+    dtype: string
     nullable: true
-    raw_format: "%m/%Y"
+    special_null_values: ["NaN", "nan", "None", "", "null"]
     transformations:
       - trim
-      - to_date
-    output_format: "%Y-%m"
+      - collapse_spaces
+    # Regex explanation:
+    # ^(\d{2}/\d{4}       --> Starts with a valid MM/YYYY
+    # (\s*,\s*\d{2}/\d{4})* --> Followed by zero or more ", MM/YYYY" pairs
+    # )?$                 --> Allows empty / null strings
+    pattern: '^(\d{2}/\d{4}(\s*,\s*\d{2}/\d{4})*)?$'
     invalid_action: flag
 
+  
   Fechas de atención por o con diabetes (lo primero que ocurra):
     label: "year_episode_dm"
-    note: "Date of diabetes care episode. Raw format MM/YYYY."
-    dtype: date
+    note: "Comma-separated list of care episode dates in MM/YYYY format."
+    dtype: string
     nullable: true
-    raw_format: "%m/%Y"
+    special_null_values: ["NaN", "nan", "None", "", "null"]
     transformations:
       - trim
-      - to_date
-    output_format: "%Y-%m"
+      - collapse_spaces
+    # Regex explanation:
+    # ^(\d{2}/\d{4}       --> Starts with a valid MM/YYYY
+    # (\s*,\s*\d{2}/\d{4})* --> Followed by zero or more ", MM/YYYY" pairs
+    # )?$                 --> Allows empty / null strings
+    pattern: '^(\d{2}/\d{4}(\s*,\s*\d{2}/\d{4})*)?$'
     invalid_action: flag
 
   # ---------------------------------------------------------------------------
@@ -2199,19 +2208,36 @@ variables:
     max_length: 500
     invalid_action: flag
 
+
   Responsable:
-    label: "researcher_name"
-    note: >
-      Name of researcher who collected the data.
-      Consider switching to categorical + fuzzy_match once all
-      researcher names are known.
-    dtype: string
-    nullable: true
-    transformations:
-      - sanitize
-      - trim
-      - collapse_spaces
-      - smart_title_case
-      - empty_to_null
-    max_length: 120
-    invalid_action: flag
+      label: "researcher_name"
+      note: >
+        Name of researcher who collected the data.
+        Consider switching to categorical + fuzzy_match once all
+        researcher names are known.
+      dtype: categorical
+      nullable: true
+      fuzzy_match: true
+      threshold: 88
+      canonical: [
+        "Andrea Duque",                      
+        "Eddie Andres Guevara Petro",        
+        "Elkin Yesid Bonet Arengas",         
+        "Lissette Gomez Zapata",             
+        "Juan Pablo Perez Bedoya",                  
+        "Lised Gomez Aristizabal",            
+        "Vanessa Peralta Serrano",             
+        "Sara Yesenia Munera Ibague",          
+        "Juan Diego Martinez",                 
+        "Melissa Arango Gil",                  
+        "Daniel Sebastian Mejia Muentes",                    
+        "Andrea Marin Lopez",                  
+        "Isabella Narvaez Florez",                
+        "Valentina Roman Parra",                                                  
+        "Fredy Arcos Ceron",            
+      ]
+      transformations:
+        - trim
+        - smart_title_case
+        - empty_to_null
+      invalid_action: flag

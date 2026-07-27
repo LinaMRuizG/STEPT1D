@@ -112,21 +112,21 @@ class DataValidator:
 
     def _global_preprocess(self) -> None:
         """
-        Step 1a — replace null sentinel strings with pd.NA (object cols only).
-        Step 1b — replace float NaN with pd.NA on ALL columns.
+        Step 1a — replace null sentinel strings with pd.NA (object/string cols only).
+        Step 1b — replace float NaN/None with pd.NA safely.
         """
         null_strings = self.schema.global_config.null_strings
 
-        # replace null strings on string/object columns
-        if null_strings:
-            object_cols = self.cleaned.select_dtypes(include="object").columns
-            self.cleaned[object_cols] = (
-                self.cleaned[object_cols].replace(null_strings, pd.NA)
-            )
+        # Target string/object columns explicitly to prevent float promotion
+        str_cols = self.cleaned.select_dtypes(include=["object", "string"]).columns
 
-        # replace float NaN with pd.NA on ALL columns
-        # this catches rows where the CSV had an empty cell read as float NaN
-        self.cleaned = self.cleaned.where(self.cleaned.notna(), other=pd.NA)
+        # Step 1a: Replace null strings
+        if null_strings and len(str_cols) > 0:
+            self.cleaned[str_cols] = self.cleaned[str_cols].replace(null_strings, pd.NA)
+
+        # Step 1b: Replace NaNs safely column by column without global float casting
+        for col in self.cleaned.columns:
+            self.cleaned[col] = self.cleaned[col].where(pd.notna(self.cleaned[col]), None)
 
     # =========================================================================
     # Steps 2 & 4 — Transformation engine
@@ -339,10 +339,12 @@ class DataValidator:
     def _check_range(
         self, series: pd.Series, rule: VariableRule, col: str
     ) -> None:
-        """Flag numeric values outside [rule.min, rule.max]."""
+        """Flag numeric values outside [rule.min, rule.max] without modifying the series."""
         if rule.min is None and rule.max is None:
             return
-        label   = rule.label or col
+        label = rule.label or col
+        
+        # Read-only numeric evaluation for validation logging
         numeric = pd.to_numeric(series, errors="coerce")
 
         if rule.min is not None:
@@ -586,16 +588,23 @@ class DataValidator:
         audit_path: Optional[str] = None,
     ) -> "DataValidator":
         """Save the cleaned dataset and audit log as CSV files."""
-        
-        # Default to current workspace's 'outputs' directory
         output_path = output_path or str(DEFAULT_OUTPUT_DIR / "cleaned_db.csv")
         audit_path = audit_path or str(DEFAULT_OUTPUT_DIR / "audit_log.csv")
 
-        # Create directories if they don't exist
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(audit_path).parent.mkdir(parents=True, exist_ok=True)
 
-        self.cleaned.to_csv(output_path, index=False, encoding="utf-8")
+        # Ensure integer-like strings (e.g. "2018") are saved cleanly as text without .0
+        export_df = self.cleaned.copy()
+        for col, rule in self.schema.variables.items():
+            target_col = rule.label if rule.label else col
+            if target_col in export_df.columns and rule.dtype == "string":
+                # Format numbers safely as integers without decimals
+                export_df[target_col] = export_df[target_col].apply(
+                    lambda x: str(int(float(x))) if pd.notna(x) and str(x).replace('.0','').isdigit() else x
+                )
+
+        export_df.to_csv(output_path, index=False, encoding="utf-8")
         self.audit.save(audit_path)
 
         print(f" Cleaned data saved -> {output_path}")
