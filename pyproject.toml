@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "master_validator"
-version = "0.1.0"
+version = "0.1.1"
 description = "Data validation library"
 authors = ["Lina Ruiz <your_email@example.com>"]
 readme = "README.md"
