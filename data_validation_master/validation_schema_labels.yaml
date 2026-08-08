@@ -12,9 +12,9 @@
 #   transformations run in order top → bottom
 # =============================================================================
 
-# -----------------------------------------------------------------------------
+# =============================================================================
 # GLOBAL — runs on every object column before any variable-level rule
-# -----------------------------------------------------------------------------
+# =============================================================================
 global:
   null_strings:
     - ""
@@ -165,6 +165,120 @@ _anchors:
     - encode
 
 # =============================================================================
+# OUTPUT — columns to keep in the final cleaned database
+# =============================================================================
+output:
+  keep_columns:
+    # --- Identifiers ---
+    - institution
+    - first_name
+    - last_name
+    - identity_document_type
+    - another_id
+    - id_number
+    - sex
+    # --- Birth & demographics ---
+    - country_birth
+    - birth_department
+    - municipality_birth
+    - birthdate_year
+    - birthdate_month
+    - age
+    # --- Residence ---
+    - country_residence
+    - department_residence
+    - municipality_residence
+    - another_municipality_res
+    - address_res
+    - neighborhood_residence
+    - commune_residence
+    - area_residence
+    - healthcare_system
+    # --- Diagnosis ---
+    - diagnostic_codes/0
+    - diagnostic_codes/1
+    - diagnostic_codes/2
+    - diagnostic_codes/3
+    - diagnostic_codes/4
+    - diagnostic_codes/5
+    - diagnostic_codes/6
+    - diagnostic_codes/7
+    - diagnostic_codes/8
+    - diagnostic_codes/9
+    - diagnostic_confirmation
+    - hospital_diagnosis
+    - diagnostic_residency
+    - diagnostic_site
+    # --- Insulin & treatment ---
+    - insulin_therapy
+    - insulin_types/0
+    - insulin_types/1
+    - insulin_types/2
+    - insulin_types/3
+    - insulin_types/4
+    - insulin_types/5
+    - insulin_types/6
+    - insulin_types/7
+    - insulin_types/8
+    - insulin_types/9
+    - insulin_types/10
+    - insulin_types/11
+    - insulin_types/12
+    - another_insulin
+    - insulin_pump
+    - glucose_monitoring
+    - glucometria
+    - other_hypoglycemic
+    # --- Dates & time ---
+    - year_diagnosis
+    - month_diagnosis
+    - time_diagnosis
+    - year_symptoms
+    - month_symptoms
+    - time_symptoms
+    - year_clinical_debut
+    - month_clinical_debut
+    - time_clinical_debut
+    - year_insulin
+    - month_insulin
+    - time_insulin
+    - year_consultation
+    - month_consultation
+    # --- Autoantibodies ---
+    - autoantibodies
+    - year_positive_ab_lab
+    - time_positive
+    # --- Family history ---
+    - ant_familiary_dm1
+    - ant_familiary_dm2
+    - ant_familiary_dm
+    - ant_mother_gestacional
+    # --- Complications ---
+    - comp_renal
+    - comp_eyes
+    - comp_foot
+    - amputation
+    - hta
+    - cvd
+    - obesity
+    - covid_19
+    - dka_history
+    - hypoglycemia
+    - mental_health
+    - other_autoimmune
+    # --- Death ---
+    - death
+    - death_date
+    # --- Episodes ---
+    - year_episode
+    - year_episode_dm
+    # --- Administrative ---
+    - observations
+    - researcher_name
+  
+  drop_columns: []
+
+# =============================================================================
 # VARIABLES
 # Key   = exact raw CSV column header
 # label = snake_case name in the cleaned output
@@ -277,6 +391,9 @@ variables:
     note: "Open-ended question. Free text for other identity document types."
     dtype: string
     nullable: true
+    fuzzy_match: true
+    threshold: 88
+    canonical: ["Permiso Proteccion Temporal","Pasaporte","Sin Identificacion"]
     transformations:
       - trim
       - smart_title_case

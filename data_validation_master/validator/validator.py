@@ -37,7 +37,7 @@ import yaml
 from rapidfuzz import fuzz, process
 
 from .audit import AuditLog, Reason
-from .rules import GlobalConfig, ValidationSchema, VariableRule
+from .rules import GlobalConfig, ValidationSchema, VariableRule, OutputConfig
 from .transformations import TRANSFORMATIONS, apply_map_values
 
 # Project root = two levels above this file
@@ -87,6 +87,7 @@ class DataValidator:
             raw = yaml.safe_load(f)
 
         global_cfg = GlobalConfig(**raw.get("global", {}))
+        output_cfg = OutputConfig(**raw.get("output", {}))
 
         variables: dict[str, VariableRule] = {}
         errors = 0
@@ -103,7 +104,7 @@ class DataValidator:
         if errors:
             print(f"\n  {errors} schema variable(s) failed to parse — fix before running.\n")
 
-        return ValidationSchema(global_config=global_cfg, variables=variables)
+        return ValidationSchema(global_config=global_cfg, variables=variables, output=output_cfg)
 
     # =========================================================================
     # Step 1 — Global preprocessor
@@ -558,6 +559,29 @@ class DataValidator:
         print()
         return self
 
+    def _apply_output_filter(self) -> None:
+        """
+        Keep only the columns listed in output.keep_columns.
+        If keep_columns is empty, keep all validated columns.
+        """
+        keep = self.schema.output.keep_columns
+        drop = self.schema.output.drop_columns
+
+        if keep:
+            # keep only columns that exist in the cleaned dataframe
+            cols_to_keep = [c for c in keep if c in self.cleaned.columns]
+            missing = [c for c in keep if c not in self.cleaned.columns]
+            if missing:
+                print(f"  ⚠ output.keep_columns: {len(missing)} column(s) not found:")
+                for c in missing:
+                    print(f"    · {c}")
+            self.cleaned = self.cleaned[cols_to_keep]
+
+        elif drop:
+            self.cleaned = self.cleaned.drop(
+                columns=[c for c in drop if c in self.cleaned.columns]
+            )
+
     def save_old(
         self,
         output_path: Optional[str] = None,
@@ -594,17 +618,21 @@ class DataValidator:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(audit_path).parent.mkdir(parents=True, exist_ok=True)
 
+        # filter just the variables of interest
+        self._apply_output_filter() 
+        
         # Ensure integer-like strings (e.g. "2018") are saved cleanly as text without .0
-        export_df = self.cleaned.copy()
-        for col, rule in self.schema.variables.items():
-            target_col = rule.label if rule.label else col
-            if target_col in export_df.columns and rule.dtype == "string":
-                # Format numbers safely as integers without decimals
-                export_df[target_col] = export_df[target_col].apply(
-                    lambda x: str(int(float(x))) if pd.notna(x) and str(x).replace('.0','').isdigit() else x
-                )
+        #export_df = self.cleaned.copy()
+        #for col, rule in self.schema.variables.items():
+        #    target_col = rule.label if rule.label else col
+        #    if target_col in export_df.columns and rule.dtype == "string":
+        #        # Format numbers safely as integers without decimals
+        #        export_df[target_col] = export_df[target_col].apply(
+        #            lambda x: str(int(float(x))) if pd.notna(x) and str(x).replace('.0','').isdigit() else x
+        #        )
 
-        export_df.to_csv(output_path, index=False, encoding="utf-8")
+        #export_df.to_csv(output_path, index=False, encoding="utf-8")
+        self.cleaned.to_csv(output_path, index=False, encoding="utf-8")
         self.audit.save(audit_path)
 
         print(f" Cleaned data saved -> {output_path}")

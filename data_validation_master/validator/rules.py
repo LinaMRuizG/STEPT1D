@@ -140,6 +140,15 @@ class GlobalConfig(BaseModel):
 
     model_config = {"extra": "allow"}
 
+# ---------------------------------------------------------------------------
+# Output variables
+# ---------------------------------------------------------------------------
+class OutputConfig(BaseModel):
+    keep_columns: list[str] = []
+    drop_columns: list[str] = []
+
+    model_config = {"extra": "allow"}
+
 
 # ---------------------------------------------------------------------------
 # Top-level schema
@@ -148,5 +157,6 @@ class GlobalConfig(BaseModel):
 class ValidationSchema(BaseModel):
     global_config: GlobalConfig
     variables:     dict[str, VariableRule]
-
+    output:        OutputConfig = OutputConfig() 
+    
     model_config = {"extra": "allow"}
